@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.sirallap.swapkin",
   "name": "Swapkin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "SirAllap",
   "license": "MIT",
   "description": "Never get blocked by coding agent limits again \u2014 Swapkin tracks weekly pace across Claude Code, Codex, Copilot and your own providers, and switches accounts from the Omarchy bar in one click.",
