@@ -348,6 +348,9 @@ Panel {
   property bool managing: false
   property string colourEditing: ""
   readonly property bool hasAccounts: accounts.length > 0
+  // Manage stays reachable with no saved accounts, so the first one (the
+  // current login) can be saved from here instead of only from a terminal.
+  readonly property bool canManage: hasAccounts || (!!provider && provider.addHint !== "")
   readonly property var activeAccount: {
     for (var i = 0; i < accounts.length; i++) if (accounts[i].active) return accounts[i]
     return null
@@ -674,7 +677,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.refreshNow()
         else if ((t === "a" || t === "A") && root.accounts.length > 1) root.switchToCandidate()
-        else if ((t === "m" || t === "M") && root.hasAccounts) root.toggleManage()
+        else if ((t === "m" || t === "M") && root.canManage) root.toggleManage()
       }
 
       Column {
@@ -872,7 +875,7 @@ Panel {
 
                 Button {
                   id: manageButton
-                  visible: root.hasAccounts
+                  visible: root.canManage
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
                   text: root.managing ? "done" : "manage"
@@ -898,7 +901,7 @@ Panel {
 
               // ---- Manage: recolour, forget, add ----
               Column {
-                visible: root.hasAccounts && root.managing
+                visible: root.canManage && root.managing
                 width: parent.width
                 spacing: Style.space(6)
 
@@ -1512,7 +1515,9 @@ Panel {
           Repeater {
             model: root.hasAccounts
               ? [{ k: "↑ ↓", l: "provider" }, { k: "← →", l: "account" }, { k: "a", l: "switch" }, { k: "m", l: "manage" }]
-              : [{ k: "↑ ↓", l: "provider" }, { k: "r", l: "refresh" }]
+              : root.canManage
+                ? [{ k: "↑ ↓", l: "provider" }, { k: "m", l: "manage" }, { k: "r", l: "refresh" }]
+                : [{ k: "↑ ↓", l: "provider" }, { k: "r", l: "refresh" }]
 
             Row {
               required property var modelData
