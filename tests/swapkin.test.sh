@@ -527,6 +527,73 @@ for id in acmehot acmelegacy; do
 done
 assert_eq "the live login file is untouched" '{"session":"hot-live"}' "$(cat "$HOME/.acmehot/session.json")"
 
+# ========================================= 22. sync scan caps a hostile folder ==
+echo "22. the optional sync scan skips oversized files and caps file count and total bytes"
+# The script is extracted from Main.qml as text, never hand-copied, so this
+# test tracks the real source and goes red on drift.
+SYNC_SCRIPT=$(node -e '
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const m = src.match(/var script = "((?:[^"\\]|\\.)*)"/);
+if (!m) { process.exit(1); }
+process.stdout.write(JSON.parse("\"" + m[1] + "\""));
+' "$ROOT/Main.qml")
+if [[ -z "$SYNC_SCRIPT" ]]; then
+  bad "extracted the sync scan script from Main.qml's startSyncScan()"
+else
+  ok "extracted the sync scan script from Main.qml's startSyncScan()"
+
+  SYNC_DIR=$(mktemp -d)
+  # Two valid, real-sized snapshots.
+  echo '{"providers":{"acme":{"days":{"2026-09-27":{"model-a":1}}}}}' > "$SYNC_DIR/work.json"
+  echo '{"providers":{"orbit":{"days":{"2026-09-27":{"model-b":2}}}}}' > "$SYNC_DIR/personal.json"
+  # One hostile file, bigger than the per-file cap (256 KiB).
+  python3 -c "print('{\"providers\":{\"evil\":\"' + 'A' * 400000 + '\"}}')" > "$SYNC_DIR/huge.json"
+  # More files than the file-count cap (32): 40 small, same-content files.
+  for i in $(seq 1 40); do
+    echo "{\"providers\":{\"peer$i\":{\"days\":{}}}}" > "$SYNC_DIR/peer$i.json"
+  done
+  touch -d "2020-01-01" "$SYNC_DIR"/peer*.json
+
+  sync_out=$(bash -c "$SYNC_SCRIPT" "$SYNC_DIR")
+
+  block_count=$(grep -c "^=== EOM ===$" <<<"$sync_out")
+  total_bytes=$(printf '%s' "$sync_out" | wc -c)
+
+  assert_not_contains "the oversized file's content is not in stdout" "$sync_out" "AAAAAAAAAA"
+  assert_contains "a valid file still parses (path marker present)" "$sync_out" "===$SYNC_DIR/work.json==="
+  assert_contains "a valid file's body survived" "$sync_out" '"model-a":1'
+  assert_true [ "$block_count" -le 32 ]
+  assert_true [ "$total_bytes" -le 2097152 ]
+
+  # Same-content valid blocks JSON.parse cleanly with the app's own split logic.
+  parse_ok=$(node -e '
+    const fs = require("fs");
+    const text = fs.readFileSync(process.argv[1], "utf8");
+    const lines = text.split("\n");
+    let path = "", buf = [], parsed = 0;
+    function flush() {
+      if (path === "") return;
+      try {
+        const j = JSON.parse(buf.join("\n").trim());
+        if (j && j.providers) parsed++;
+      } catch (e) {}
+      path = ""; buf = [];
+    }
+    for (const line of lines) {
+      const m = line.match(/^===(.*)===$/);
+      if (m && m[1] !== " EOM ") { flush(); path = m[1]; continue; }
+      if (line === "=== EOM ===") { flush(); continue; }
+      if (path !== "") buf.push(line);
+    }
+    flush();
+    process.stdout.write(String(parsed));
+  ' <(printf '%s' "$sync_out"))
+  assert_true [ "$parse_ok" -ge 2 ]
+
+  rm -rf "$SYNC_DIR"
+fi
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"

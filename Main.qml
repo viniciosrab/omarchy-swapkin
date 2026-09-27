@@ -516,7 +516,16 @@ Item {
       finishSyncRun()
       return
     }
-    var script = "dir=$0; [[ -d \"$dir\" ]] || exit 0; shopt -s nullglob; for f in \"$dir\"/*.json; do [[ -f \"$f\" ]] || continue; printf '===%s===\\n' \"$f\"; cat \"$f\"; printf '\\n=== EOM ===\\n'; done"
+    // Caps on the sync scan output, because the folder is a trust boundary
+    // (any Syncthing/Dropbox peer can drop a file in it):
+    //   PER_FILE_MAX 256 KiB — real snapshots (see localSnapshot/providerSnapshot)
+    //     are a few KB to a few tens of KB; anything past this is not a snapshot.
+    //   MAX_FILES 32 — newest N files by mtime; more peers than that in one
+    //     folder is not a real setup.
+    //   TOTAL_MAX 2 MiB — hard ceiling on the whole scan's stdout, applied with
+    //     `head -c` after the loop, so the first two caps being wrong still
+    //     cannot make syncScanProcess's StdioCollector grow unbounded.
+    var script = "dir=$0; [[ -d \"$dir\" ]] || exit 0; PER_FILE_MAX=262144; MAX_FILES=32; TOTAL_MAX=2097152; shopt -s nullglob; files=(); for f in \"$dir\"/*.json; do [[ -f \"$f\" ]] || continue; files+=(\"$f\"); done; mapfile -t files < <(for f in \"${files[@]}\"; do printf '%s\\t%s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\" \"$f\"; done | sort -rn | head -n \"$MAX_FILES\" | cut -f2-); for f in \"${files[@]}\"; do sz=$(stat -c %s \"$f\" 2>/dev/null || echo 0); [[ \"$sz\" -gt \"$PER_FILE_MAX\" ]] && continue; printf '===%s===\\n' \"$f\"; cat \"$f\"; printf '\\n=== EOM ===\\n'; done | head -c \"$TOTAL_MAX\""
     syncScanProcess.command = ["bash", "-c", script, root.syncEffectiveDir]
     syncScanProcess.running = true
   }
