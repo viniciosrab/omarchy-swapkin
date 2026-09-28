@@ -1859,7 +1859,7 @@ sk_rc "$SWAPKIN" -p codex use work
 assert_eq "the in-place switch still happens" user-A "$(codex_user_of "$LIVE_AUTH")"
 assert_eq "another user's managed daemon is not ours to restart" 0 "$(restarts)"
 
-echo "65. the restarted daemon does not inherit the switch lock"
+echo "64. the restarted daemon does not inherit the switch lock"
 cx_sandbox "{$CX_BOTH}"
 S=$(dirname "$SWAPKIN_DIR")
 cx_daemon_stubs
@@ -1885,7 +1885,7 @@ assert_true [ $(( SECONDS - start )) -lt 5 ]
 assert_eq "and it lands" user-A "$(codex_user_of "$LIVE_AUTH")"
 kill "$(cat "$S/fake-daemon.pid" 2>/dev/null)" 2>/dev/null || true
 
-echo "64. the watchdog's Codex hand-over restarts the daemon and says so"
+echo "65. the watchdog's Codex hand-over restarts the daemon and says so"
 cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
 S=$(dirname "$SWAPKIN_DIR")
 cx_daemon_stubs
