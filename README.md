@@ -11,6 +11,10 @@ next message, others only for a session you start after the switch — see
 One shared config directory stays where it is. A switch swaps the login inside
 it, so settings, sessions, skills, hooks and MCP logins are untouched.
 
+> Based on [Swapkin by SirAllap](https://github.com/SirAllap/omarchy-swapkin).
+> This version adds in-place Codex switching and automatic hand-over on the
+> 5-hour window for Claude Code and Codex; see [Credits](#credits).
+
 ![The Swapkin panel in the Omarchy bar](docs/panel.png)
 
 ## What it does
@@ -29,7 +33,9 @@ it, so settings, sessions, skills, hooks and MCP logins are untouched.
   `At this rate: about 64% at reset`, and the reset time. The budget grows only
   during the days and hours you work (see below).
 - **A watchdog while the panel is closed.** It warns once when the active
-  account passes your threshold. Hand-over when an account is spent is opt-in.
+  account passes your threshold. Hand-over when an account is spent is opt-in,
+  on the weekly window, the 5-hour window or both, for Claude Code and Codex
+  (see [Settings](#settings)).
 - **Today's tokens at API prices**, as an estimate you can sanity-check.
 
 ## Requirements
@@ -321,8 +327,26 @@ cut off.
 - Switching touches undocumented internals of Claude Code's config. It has
   worked since day one here, but a future release could move things.
 
+## Credits
+
+Swapkin was created by [SirAllap](https://github.com/SirAllap); the original
+project lives at
+[SirAllap/omarchy-swapkin](https://github.com/SirAllap/omarchy-swapkin). This
+repository is maintained by [viniciosrab](https://github.com/viniciosrab) and
+builds on it with:
+
+- **Codex switches in place.** The account's login is written into
+  `~/.codex/auth.json`, so a plain `codex`, `codex login status` and bar usage
+  monitors follow a switch, and Codex usage is attributed per account.
+- **Automatic hand-over on the 5-hour window**, next to the weekly one, through
+  a shared watchdog that also covers Codex (`autoSwitchWindows`,
+  `autoSwitchAt`, `autoSwitchProviders`).
+- **Add account asks for a name** for every provider, not only Claude Code.
+- **`swapkin` on your PATH** through `~/.local/bin`.
+
 ## Licence
 
-MIT. Parts of the panel are derived from Omarchy's built-in agents plugin,
+MIT, © SirAllap for the original Swapkin and © viniciosrab for the changes
+listed under [Credits](#credits). Parts of the panel are derived from Omarchy's built-in agents plugin,
 also MIT. Claude and Claude Code are trademarks of Anthropic; this is an
 independent project and is not affiliated with or endorsed by Anthropic.
