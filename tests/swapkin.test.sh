@@ -1791,12 +1791,14 @@ cx_daemon_stubs() {
 echo \"\$*\" >> '$CODEX_CALLS'
 case \"\$*\" in
   'app-server daemon restart') [ -e '$RESTART_FAILS' ] && exit 1; exit 0 ;;
+  'login status') echo 'Logged in using ChatGPT' ;;
 esac
 exit 0
 "
   mk_stub pgrep "
 case \"\$*\" in
-  *managed-daemon*) [ -e '$DAEMON_UP' ] && echo 777 && exit 0; exit 1 ;;
+  \"-u $(id -u) -f -- --managed-daemon\") [ -e '$DAEMON_UP' ] && echo 777 && exit 0; exit 1 ;;
+  *managed-daemon*) echo 999; exit 0 ;;
   '-ax codex') printf '777 codex app-server --listen unix:// --managed-daemon\n888 codex\n' ;;
   *) exit 1 ;;
 esac
@@ -1844,8 +1846,18 @@ assert_true [ "$rc" -ne 0 ]
 assert_eq "a refused switch restarts nothing" 0 "$(restarts)"
 
 rm -f "$LIVE_AUTH"; : > "$CODEX_CALLS"
-sk_rc "$SWAPKIN" -p codex use work
+echo restarted > "$CX/.daemon_restart"
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "a pointer-only switch still switches" codex02 "$(cat "$CX/active")"
 assert_eq "a pointer-only switch restarts nothing" 0 "$(restarts)"
+assert_eq "and leaves no earlier outcome behind for the notice" none "$(cat "$CX/.daemon_restart" 2>/dev/null)"
+
+rm -f "$DAEMON_UP"; : > "$CODEX_CALLS"
+cx_account other user-O acct-O
+cp "$CX/codex02/auth.json" "$LIVE_AUTH"; echo codex02 > "$CX/active"
+sk_rc "$SWAPKIN" -p codex use work
+assert_eq "the in-place switch still happens" user-A "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "another user's managed daemon is not ours to restart" 0 "$(restarts)"
 
 echo "64. the watchdog's Codex hand-over restarts the daemon and says so"
 cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"

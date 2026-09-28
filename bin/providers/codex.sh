@@ -221,6 +221,9 @@ use_pointer_only() { # name reason
 
 p_use() { # name
   local name="$1" dir; dir=$(account_dir "$name")
+  # Every switch starts with no daemon outcome, so the watchdog's notice never
+  # reports a restart from an earlier switch.
+  printf 'none\n' > "$DAEMON_OUTCOME" 2>/dev/null || true
   [[ -f $dir/codex.json ]] || die "no saved account '$name'"
   local live; live=$(live_auth)
   if [[ ! -f $live ]]; then
@@ -309,7 +312,8 @@ daemon_restart_wanted() {
 
 restart_daemon() { # name
   local outcome=none cli
-  if pgrep -f -- --managed-daemon >/dev/null 2>&1; then
+  # Only this user's daemon: another user's is not ours to restart.
+  if pgrep -u "$(id -u)" -f -- --managed-daemon >/dev/null 2>&1; then
     if ! daemon_restart_wanted; then
       outcome=disabled
       echo "The Codex daemon keeps the previous account until it is restarted; $DAEMON_HINT"
