@@ -19,7 +19,9 @@ P_HOW="New Codex sessions and bar usage monitors use the switched account. Codex
 P_ADD_HINT="The first account is whatever CODEX_HOME is already signed into."
 
 p_installed() { [[ -n $(tool_bin codex) ]]; }
-p_sessions() { pgrep -x codex 2>/dev/null | wc -l; }
+# Running Codex sessions, leaving out app-server processes (the shared daemon,
+# the ChatGPT app's server), which are not sessions of their own.
+p_sessions() { { pgrep -ax codex 2>/dev/null || true; } | grep -vc -- app-server || true; }
 
 home_of() { jq -r '.home // empty' "$(account_dir "$1")/codex.json" 2>/dev/null; } # name
 
@@ -219,6 +221,9 @@ use_pointer_only() { # name reason
 
 p_use() { # name
   local name="$1" dir; dir=$(account_dir "$name")
+  # Every switch starts with no daemon outcome, so the watchdog's notice never
+  # reports a restart from an earlier switch.
+  printf 'none\n' > "$DAEMON_OUTCOME" 2>/dev/null || true
   [[ -f $dir/codex.json ]] || die "no saved account '$name'"
   local live; live=$(live_auth)
   if [[ ! -f $live ]]; then
@@ -284,6 +289,43 @@ p_use() { # name
   if (( ${running:-0} > 0 )); then
     echo "$running running Codex session(s) keep the previous account until you restart them."
   fi
+  restart_daemon "$name"
+}
+
+# Codex 0.157 runs a shared background server (`codex app-server
+# --managed-daemon`) that a plain `codex` connects to. It loaded its login when
+# it started and keeps it in memory, so after an in-place switch it must be
+# restarted for new sessions to use the new account. Sessions it was running
+# are interrupted; `codex resume` brings them back. The outcome is left in
+# DAEMON_OUTCOME for the watchdog's notice, which runs in another shell.
+DAEMON_OUTCOME="$(provider_root codex)/.daemon_restart"
+DAEMON_HINT="run: codex app-server daemon restart"
+
+# codexDaemonRestart, default true. Read with has(): jq's `//` would turn an
+# explicit false into the default. A missing or broken config means the default.
+daemon_restart_wanted() {
+  local v
+  v=$(jq -r 'if type == "object" and has("codexDaemonRestart") then .codexDaemonRestart | tostring else "true" end' \
+    "$ACCOUNTS/config.json" 2>/dev/null) || v=true
+  [[ $v != false ]]
+}
+
+restart_daemon() { # name
+  local outcome=none cli
+  # Only this user's daemon: another user's is not ours to restart.
+  if pgrep -u "$(id -u)" -f -- --managed-daemon >/dev/null 2>&1; then
+    if ! daemon_restart_wanted; then
+      outcome=disabled
+      echo "The Codex daemon keeps the previous account until it is restarted; $DAEMON_HINT"
+    elif cli=$(tool_bin codex) && [[ -n $cli ]] && timeout 30 "$cli" app-server daemon restart >/dev/null 2>&1; then
+      outcome=restarted
+      echo "Restarted the Codex daemon so new sessions use $1. Sessions it was running were interrupted; bring them back with codex resume."
+    else
+      outcome=failed
+      echo "Could not restart the Codex daemon, so new sessions may keep the previous account; $DAEMON_HINT"
+    fi
+  fi
+  printf '%s\n' "$outcome" > "$DAEMON_OUTCOME" 2>/dev/null || true
 }
 
 p_env() { # name
@@ -480,5 +522,9 @@ p_watch_switched() { # from reason to
   if [[ -z $want || ! -f $(live_auth) || $(codex_identity "$(live_auth)") != "$want" ]]; then
     body+=" The switch could not go in place, so start new sessions with swapkin run codex."
   fi
+  case $(cat "$DAEMON_OUTCOME" 2>/dev/null) in
+    restarted) body+=" Restarted the Codex daemon; codex resume brings back what it was running." ;;
+    failed|disabled) body+=" The Codex daemon still has $1; $DAEMON_HINT." ;;
+  esac
   printf '%s\n' "$body"
 }

@@ -105,6 +105,14 @@ Each one switches a different way:
   that isn't one of your saved accounts; save it first with `swapkin -p codex
   add <name>`. With a keyring login (no `auth.json` on disk) only the pointer
   moves; see [below](#codex-and-other-new-session-tools).
+
+  Codex 0.157 also runs a shared background server (`codex app-server
+  --managed-daemon`) that a plain `codex` connects to; it keeps the login it
+  started with. After an in-place switch Swapkin restarts it (`codex
+  app-server daemon restart`), which interrupts the sessions it was running:
+  bring them back with `codex resume`. Set `"codexDaemonRestart": false` to
+  restart it yourself instead. The ChatGPT desktop app runs its own Codex
+  server, which keeps the old account until you restart the app.
 - **Copilot CLI — new sessions.** Copilot has no login file of its own; it
   rides on `gh`'s account. Switching runs `gh auth switch`, so new Copilot CLI
   sessions (and anything else that asks `gh` who's signed in, including `git
@@ -220,6 +228,10 @@ Behaviour lives in `~/.local/share/swapkin/config.json`:
   `alertAt`, `autoSwitch`, `autoSwitchWindows` and `autoSwitchAt`, keeps its own
   warning state, and is handled on its own: one provider's switch never waits
   on, or depends on, another's.
+- `codexDaemonRestart` — restart Codex's shared background server after an
+  in-place switch, so a plain `codex` uses the new account. Default `true`.
+  With `false`, the running server keeps the old account until you run
+  `codex app-server daemon restart`.
 
 With several accounts, the 5-hour session window is usually the one that runs
 out first. To hand over as soon as it is nearly spent:
@@ -246,7 +258,8 @@ Codex notices start with `Codex:`, and a few things work differently:
 - **Running sessions keep their account.** The switch writes the new login into
   `~/.codex/auth.json`, so new sessions and bar monitors follow, but a Codex
   session already running keeps the previous account until you restart it. The
-  notice says so. When the switch can't go in place (signed out, a keyring
+  notice says so, and says whether Codex's shared background server was
+  restarted (`codex resume` brings back what it was running). When the switch can't go in place (signed out, a keyring
   login, or an API-key login), only the pointer moves and the notice tells you
   to start new sessions with `swapkin run codex`. A switch swapkin refuses (a live
   login that belongs to none of your saved accounts, or a corrupt one) is a
