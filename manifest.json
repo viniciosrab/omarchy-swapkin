@@ -28,6 +28,7 @@
     "allowMultiple": false,
     "defaults": {
       "refreshIntervalSec": 900,
+      "percentages": "Remaining",
       "syncMode": "Off",
       "syncDir": "",
       "syncFileName": "",
@@ -47,6 +48,17 @@
         "max": 3600,
         "step": 30,
         "defaultValue": 900
+      },
+      {
+        "key": "percentages",
+        "type": "enum",
+        "label": "Percentages",
+        "options": [
+          "Remaining",
+          "Used"
+        ],
+        "defaultValue": "Remaining",
+        "description": "Show how much of each limit is left, or how much is used."
       },
       {
         "key": "syncMode",
