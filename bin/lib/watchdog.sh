@@ -9,6 +9,9 @@
 #     figures can be trusted. Without it, usage.json must be under 2 hours old;
 #   - P_WATCH_RESETS_EXPIRE=1: figures are not fetched live, so a window whose
 #     reset has already passed reads as untouched (0%);
+#   - P_WATCH_UNKNOWN_IS_ROOM=1: a candidate with no figures at all (never
+#     used on this machine) is a last resort instead of being skipped: any
+#     account with known room wins over it;
 #   - p_watch_switched <from> <reason> <to>, when defined: the body of the
 #     "switched" notice. Without it, open sessions follow on their next message.
 # Notices from any provider but Claude are prefixed with its name.
@@ -189,11 +192,17 @@ tightest_of() { # account windows...
 # weekly ranking.
 roomiest() { # account-to-ignore switch-at windows...
   local ignore=$1 at=$2; shift 2
-  local best="" best_pct=2 name pct
+  local best="" best_pct=2 unknown="" name pct
   for name in $(profiles); do
     [[ $name == "$ignore" ]] && continue
     pct=$(tightest_of "$name" "$@")
-    awk -v p="$pct" 'BEGIN{exit !(p >= 0)}' || continue
+    if ! awk -v p="$pct" 'BEGIN{exit !(p >= 0)}'; then
+      # No figures at all: only a last resort, behind any account whose room
+      # is known, and only for adapters that allow it.
+      [[ ${P_WATCH_UNKNOWN_IS_ROOM:-0} == 1 && -z $unknown ]] || continue
+      usable_candidate "$name" "$@" && unknown="$name"
+      continue
+    fi
     reached "$pct" "$at" && continue
     usable_candidate "$name" "$@" || continue
     if awk -v p="$pct" -v b="$best_pct" 'BEGIN{exit !(p < b)}'; then
@@ -201,7 +210,7 @@ roomiest() { # account-to-ignore switch-at windows...
       best_pct="$pct"
     fi
   done
-  echo "$best"
+  echo "${best:-$unknown}"
 }
 
 # Whether a candidate can be handed over to: a real login (the adapter's

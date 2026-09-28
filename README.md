@@ -252,8 +252,11 @@ Codex notices start with `Codex:`, and a few things work differently:
   reset since, or when its last figure, however old, is below `autoSwitchAt`.
   If the same account is in use on another machine, that bound can be wrong;
   the worst case is a switch to a spent account, and the next check hands over
-  again. The active account is read the same way: a window that reset since
-  its last session is not spent.
+  again. An account that has never run a session on this machine has no
+  figures at all; it is only chosen when no account with known room exists,
+  and if it turns out spent, the watchdog hands over again once a session here
+  has recorded its limits. The active account is read the same way: a window
+  that reset since its last session is not spent.
 
 The watchdog interval and the weekly budget are widget settings:
 

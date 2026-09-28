@@ -439,6 +439,11 @@ p_plan() { jq -r '.tierLabel // empty' "$(account_dir "$1")/usage.json" 2>/dev/n
 # Codex figures are never fetched live: p_probe reads them from the account's
 # last session on this machine, so a window that reset since then has room.
 P_WATCH_RESETS_EXPIRE=1
+# An account with no session on this machine has no figures at all. Its usage
+# can only be what other machines spent, so it is a last resort when no account
+# with known room exists. If it turns out spent, the watchdog hands over again
+# once a session on this machine has recorded its limits.
+P_WATCH_UNKNOWN_IS_ROOM=1
 
 # A candidate the watchdog may hand over to: a saved account whose login file,
 # when there is one, holds a ChatGPT identity or an API key. A corrupt one is

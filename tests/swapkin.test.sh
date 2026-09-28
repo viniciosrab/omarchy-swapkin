@@ -1751,6 +1751,36 @@ assert_eq "hands over to the next usable account" codex02 "$(cat "$CX/active")"
 assert_eq "the live login follows" user-C "$(codex_user_of "$LIVE_AUTH")"
 assert_contains "and says so" "$(cat "$NOTIFY_LOG")" "Codex: switched to codex02"
 
+echo "62. Codex: an account with no recorded usage at all is a candidate"
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+cx_account work user-A acct-A
+cx_account codex02 user-C acct-C
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+# codex02 has never run a session here: no rollout, no usage.json.
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "hands over to the never-used account" codex02 "$(cat "$CX/active")"
+assert_eq "the live login follows" user-C "$(codex_user_of "$LIVE_AUTH")"
+
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+cx_account work user-A acct-A
+cx_account codex02 user-C acct-C
+cx_account known user-D acct-D
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-D acct-D 40 3600 30 $((3 * DAY)) 60
+cx_check
+assert_eq "an account with known room wins over one with no figures" known "$(cat "$CX/active")"
+
+sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["weekly","session"]}'
+sw_account spent 1.0 0.3
+sw_account nofigures 0.1 0.1
+rm -f "$SWAPKIN_DIR/nofigures/usage.json"
+echo spent > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "Claude still skips an account with no figures" spent "$(cat "$SWAPKIN_DIR/active")"
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"
