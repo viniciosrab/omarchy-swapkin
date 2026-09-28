@@ -184,7 +184,7 @@ it back off. Nothing it does ever reads or writes a real login.
 | `swapkin colour <name> <#rrggbb>` | Set the colour that marks an account |
 | `swapkin remove <name>` | Forget a saved account |
 | `swapkin usage` | Refresh each account's limits |
-| `swapkin check` | One watchdog pass: refresh, warn, hand over |
+| `swapkin check` | One watchdog pass: refresh, warn, hand over (every provider in `autoSwitchProviders`) |
 | `swapkin cost` | Today's tokens priced at API rates, as JSON |
 | `swapkin statusline [--plain]` | The active account, coloured, for a status line |
 
@@ -208,6 +208,12 @@ Behaviour lives in `~/.local/share/swapkin/config.json`:
 - `autoSwitchAt` — the percentage at which a watched window counts as spent and
   the account hands over. Default `100`. A value outside 1–100 is clamped into
   it; anything that is not a number is ignored.
+- `autoSwitchProviders` — which providers the watchdog watches: `"claude"`,
+  `"codex"`, or both. Default `["claude"]`. Unknown items are ignored; an empty
+  or invalid value means the default. Every provider listed uses the same
+  `alertAt`, `autoSwitch`, `autoSwitchWindows` and `autoSwitchAt`, keeps its own
+  warning state, and is handled on its own: one provider's switch never waits
+  on, or depends on, another's.
 
 With several accounts, the 5-hour session window is usually the one that runs
 out first. To hand over as soon as it is nearly spent:
@@ -222,6 +228,32 @@ a warning saying so and nothing switches, but every later check tries again
 while the account stays spent, so the first account to free up is taken. A
 switch that fails is reported once and retried the same way. Each warning names
 its window and fires once per threshold until that window resets.
+
+To let Codex hand over too:
+
+```json
+{ "alertAt": 90, "autoSwitch": true, "autoSwitchWindows": ["weekly", "session"], "autoSwitchProviders": ["claude", "codex"] }
+```
+
+Codex notices start with `Codex:`, and a few things work differently:
+
+- **Running sessions keep their account.** The switch writes the new login into
+  `~/.codex/auth.json`, so new sessions and bar monitors follow, but a Codex
+  session already running keeps the previous account until you restart it. The
+  notice says so. When the switch can't go in place (signed out, a keyring
+  login, or an API-key login), only the pointer moves and the notice tells you
+  to start new sessions with `swapkin run codex`. A switch swapkin refuses (a live
+  login that belongs to none of your saved accounts, or a corrupt one) is a
+  failed switch: reported once, retried on every check.
+- **Figures can be old.** Codex has no usage endpoint to ask; each account's
+  figures are the rate limits from its last session on this machine. An account
+  nobody uses can't see its usage go up, only down when a window resets, so an
+  old figure is taken as an upper bound: a watched window has room when it has
+  reset since, or when its last figure, however old, is below `autoSwitchAt`.
+  If the same account is in use on another machine, that bound can be wrong;
+  the worst case is a switch to a spent account, and the next check hands over
+  again. The active account is read the same way: a window that reset since
+  its last session is not spent.
 
 The watchdog interval and the weekly budget are widget settings:
 
@@ -242,8 +274,10 @@ after the start, the budget grows evenly all week.
 ```
 ~/.local/share/swapkin/
   active                  the account in use
-  config.json             alertAt, autoSwitch, autoSwitchWindows, autoSwitchAt
+  config.json             alertAt, autoSwitch, autoSwitchWindows, autoSwitchAt,
+                          autoSwitchProviders
   watch.json              which warnings were already sent, per window
+  providers/codex/watch.json  the same, for Codex (with autoSwitchProviders)
   <account>/oauth.json    that account's login        (0600)
   <account>/account.json  its profile keys            (0600)
   <account>/meta.json     its colour

@@ -1466,6 +1466,291 @@ sw_check
 assert_eq "the next check retries and switches" roomy "$(cat "$SWAPKIN_DIR/active")"
 assert_eq "one 'Switched' notice, for the real switch" 1 "$(grep -c 'Switched to roomy' "$NOTIFY_LOG")"
 
+# ========== 53-59. opt-in Codex auto-switch (autoSwitchProviders) ==
+# Codex figures come from rollouts, as in real use: every account below writes
+# its rate limits into a rollout in the live ~/.codex/sessions, stamped with
+# its creator ids, and `check` refreshes usage.json from them through p_probe.
+# A rollout's mtime is when its figures were taken. Every refresh token starts
+# with CX_SW_PREFIX, so the summary's leak check covers all of them.
+CX_SW_PREFIX="codex-switch-fixture-token"
+
+cx_sandbox() { # config-json
+  sw_sandbox "$1"
+  unset CODEX_HOME
+  CX="$SWAPKIN_DIR/providers/codex"
+  LIVE_AUTH="$HOME/.codex/auth.json"
+  mkdir -p "$CX" "$HOME/.codex/sessions"
+}
+
+# A saved Codex account with its own stored login and a legacy home.
+cx_account() { # name user account-id
+  fake_codex_auth "$CX/$1/auth.json" "$2" "$3" plus "$CX_SW_PREFIX-$1-PPPPPPPPPPPPPPPPPPPP"
+  jq -n --arg h "$CX/$1/home" '{home:$h}' > "$CX/$1/codex.json"
+  jq -n '{colour:"#7fa7d9"}' > "$CX/$1/meta.json"
+}
+
+# That account's login is the live one, and it is the active account.
+cx_live() { # name
+  cp "$CX/$1/auth.json" "$LIVE_AUTH"
+  chmod 600 "$LIVE_AUTH"
+  echo "$1" > "$CX/active"
+}
+
+# One rollout with both windows; resets are offsets from now, in seconds.
+cx_rollout() { # user account-id 5h-percent 5h-reset-offset weekly-percent weekly-reset-offset age-seconds
+  local now f; now=$(date +%s)
+  f="$HOME/.codex/sessions/rollout-$1-$2-$RANDOM$RANDOM.jsonl"
+  jq -cn --arg u "$1" --arg a "$2" '{type:"session_meta", payload:{id:"s", creator_user_id:$u, creator_account_id:$a}}' > "$f"
+  jq -cn --argjson p5 "$3" --argjson r5 "$((now + $4))" --argjson pw "$5" --argjson rw "$((now + $6))" \
+    '{type:"event_msg", payload:{rate_limits:{plan_type:"plus",
+       primary:{used_percent:$p5, window_minutes:300, resets_at:$r5},
+       secondary:{used_percent:$pw, window_minutes:10080, resets_at:$rw}}}}' >> "$f"
+  touch -d "@$((now - $7))" "$f"
+}
+
+cx_check() { sk_rc "$SWAPKIN" check; SW_RC=$rc; }
+
+CX_BOTH='"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["weekly","session"]'
+DAY=86400
+
+echo "53. by default the watchdog leaves a spent Codex account alone"
+cx_sandbox "{$CX_BOTH}"
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 10 3600 10 $((3 * DAY)) 60
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "the active Codex account is unchanged" work "$(cat "$CX/active")"
+assert_eq "the live Codex login is unchanged" user-A "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "no notification" 0 "$(sw_notes)"
+assert_true test ! -e "$CX/watch.json"
+for providers in '"codex"' '[]' '["bogus"]' '{"codex":true}'; do
+  cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":$providers}"
+  cx_account work user-A acct-A
+  cx_account codex02 user-B acct-B
+  cx_live work
+  cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+  cx_rollout user-B acct-B 10 3600 10 $((3 * DAY)) 60
+  cx_check
+  assert_eq "autoSwitchProviders $providers exits cleanly" 0 "$SW_RC"
+  assert_eq "autoSwitchProviders $providers means Claude alone" work "$(cat "$CX/active")"
+done
+
+echo "54. with Codex enabled, a spent 5-hour window hands over to a roomy Codex account"
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"claude\",\"codex\"]}"
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_account codex03 user-C acct-C
+cx_live work
+# codex03 has the least weekly usage but its 5-hour window is the tighter one.
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 30 3600 30 $((3 * DAY)) 120
+cx_rollout user-C acct-C 60 3600 5 $((3 * DAY)) 120
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "the active Codex account is the roomiest one" codex02 "$(cat "$CX/active")"
+assert_eq "the live ~/.codex/auth.json now holds codex02's login" user-B "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "the live login is still mode 600" 600 "$(stat -c %a "$LIVE_AUTH")"
+assert_eq "work's store keeps work's login" user-A "$(codex_user_of "$CX/work/auth.json")"
+notes=$(cat "$NOTIFY_LOG")
+assert_eq "one notification" 1 "$(sw_notes)"
+assert_contains "the notice names Codex and the new account" "$notes" "Codex: switched to codex02"
+assert_contains "the notice names the spent window" "$notes" "work hit its 5-hour limit"
+assert_contains "the notice says running sessions keep the old account" "$notes" "Running Codex sessions keep work until they are restarted"
+assert_not_contains "the notice does not claim open sessions follow" "$notes" "follow on their next message"
+assert_eq "Codex keeps its own watch state" 2 \
+  "$(jq -r '.work.session | to_entries[0].value' "$CX/watch.json" 2>/dev/null)"
+assert_true test ! -e "$SWAPKIN_DIR/watch.json"
+cx_check
+assert_eq "the next check does nothing more" 1 "$(sw_notes)"
+
+echo "55. Codex candidates: an old figure is an upper bound; a reset window has room"
+cx_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["session"],"autoSwitchProviders":["codex"]}'
+cx_account work user-A acct-A
+cx_account old-past user-B acct-B
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+# Spent three days ago, but that 5-hour window reset long since.
+cx_rollout user-B acct-B 100 -$((3 * DAY - 18000)) 20 $((4 * DAY)) $((3 * DAY))
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "a stale candidate whose window has reset is taken" old-past "$(cat "$CX/active")"
+assert_eq "and the live login follows" user-B "$(codex_user_of "$LIVE_AUTH")"
+
+# Idle for three hours, with both windows still running: nobody used these
+# accounts since, so their usage can only have gone down. An old figure below
+# autoSwitchAt means room; one at it still means spent.
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+cx_account work user-A acct-A
+cx_account old-full user-B acct-B
+cx_account old-part user-C acct-C
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 100 3600 20 $((4 * DAY)) 10800
+cx_rollout user-C acct-C 30 3600 40 $((4 * DAY)) 10800
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "an idle candidate under the threshold in every window is taken" old-part "$(cat "$CX/active")"
+assert_eq "and the live login follows" user-C "$(codex_user_of "$LIVE_AUTH")"
+
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+cx_account work user-A acct-A
+cx_account old-full user-B acct-B
+cx_account old-week user-C acct-C
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 100 3600 20 $((4 * DAY)) 10800
+# Its session reset long since, but its week is spent and still running.
+cx_rollout user-C acct-C 100 -$((DAY)) 100 $((4 * DAY)) $((2 * DAY))
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "an idle candidate still spent in a running window is skipped" work "$(cat "$CX/active")"
+assert_eq "the live login is untouched" user-A "$(codex_user_of "$LIVE_AUTH")"
+assert_contains "the warning says no account has room" "$(cat "$NOTIFY_LOG")" "No other account has room right now."
+assert_contains "the warning names Codex" "$(cat "$NOTIFY_LOG")" "Codex: work is at 100% of its 5-hour window"
+
+# The active account's own window reset since its last session: not spent.
+cx_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["session"],"autoSwitchProviders":["codex"]}'
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_live work
+cx_rollout user-A acct-A 100 -3600 20 $((3 * DAY)) 21600
+cx_rollout user-B acct-B 10 3600 10 $((3 * DAY)) 60
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "a window that reset since is not spent" work "$(cat "$CX/active")"
+assert_eq "and nothing is notified" 0 "$(sw_notes)"
+
+echo "56. a Codex refusal is a failed switch: reported once, retried on every check"
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_live work
+# The live login belongs to no saved account, so use refuses to overwrite it.
+fake_codex_auth "$LIVE_AUTH" user-Q acct-Q plus "$CX_SW_PREFIX-unknown-QQQQQQQQQQQQQQQQQQQQ"
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 10 3600 10 $((3 * DAY)) 60
+cx_check
+rc1=$SW_RC
+cx_check
+assert_true [ "$rc1" -ne 0 ]
+assert_true [ "$SW_RC" -ne 0 ]
+assert_eq "the active account is unchanged" work "$(cat "$CX/active")"
+assert_eq "the unknown live login is never overwritten" user-Q "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "no 'switched' notice" 0 "$(grep -ci 'switched to' "$NOTIFY_LOG")"
+assert_eq "the failed switch is reported once, naming Codex and the target" 1 "$(grep -c 'Codex: could not switch to codex02' "$NOTIFY_LOG")"
+cp "$CX/work/auth.json" "$LIVE_AUTH"
+cx_check
+assert_eq "check exits cleanly once the switch works" 0 "$SW_RC"
+assert_eq "the next check retries and switches" codex02 "$(cat "$CX/active")"
+assert_eq "the live login follows" user-B "$(codex_user_of "$LIVE_AUTH")"
+
+echo "57. a Codex switch that cannot go in place still switches, and says how to start sessions"
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_live work
+# Its legacy home still holds a login, which the pointer-only switch needs.
+mkdir -p "$CX/codex02/home"
+cp "$CX/codex02/auth.json" "$CX/codex02/home/auth.json"
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 10 3600 10 $((3 * DAY)) 60
+# Signed out (or a keyring login): there is no live auth.json to switch in place.
+rm "$LIVE_AUTH"
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "the pointer moved" codex02 "$(cat "$CX/active")"
+assert_true test ! -e "$LIVE_AUTH"
+notes=$(cat "$NOTIFY_LOG")
+assert_contains "it counts as a switch" "$notes" "Codex: switched to codex02"
+assert_contains "and says new sessions need swapkin run codex" "$notes" "swapkin run codex"
+
+echo "58. Claude and Codex spent in the same check are handled independently"
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"claude\",\"codex\"]}"
+sw_account work 1.0 0.2
+sw_account other 0.1 0.1
+echo work > "$SWAPKIN_DIR/active"
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_live work
+cx_rollout user-A acct-A 100 7200 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 10 3600 10 $((3 * DAY)) 60
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "Claude handed over" other "$(cat "$SWAPKIN_DIR/active")"
+assert_eq "Codex handed over" codex02 "$(cat "$CX/active")"
+assert_eq "the live Codex login follows" user-B "$(codex_user_of "$LIVE_AUTH")"
+notes=$(cat "$NOTIFY_LOG")
+assert_contains "the Claude notice is unchanged" "$notes" "Switched to other | work hit its 5-hour limit. Open sessions follow on their next message."
+assert_contains "the Codex notice names Codex" "$notes" "Codex: switched to codex02"
+assert_eq "two notices" 2 "$(sw_notes)"
+assert_eq "Claude's state holds Claude's session reset alone" '["2026-09-28T15:00"]' \
+  "$(jq -c '.work.session | keys' "$SWAPKIN_DIR/watch.json" 2>/dev/null)"
+cx_reset=$(date -u -d "$(jq -r '.limits[0].resetsAt' "$CX/work/usage.json" 2>/dev/null)" +%s 2>/dev/null || echo 0)
+cx_key=$(date -u -d "@$(( (cx_reset + 30) / 60 * 60 ))" +%Y-%m-%dT%H:%M)
+assert_eq "Codex's state holds Codex's session reset alone" "[\"$cx_key\"]" \
+  "$(jq -c '.work.session | keys' "$CX/watch.json" 2>/dev/null)"
+
+echo "59. autoSwitchProviders [\"codex\"] alone leaves a spent Claude account to the user"
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+sw_account work 1.0 0.2
+sw_account other 0.1 0.1
+echo work > "$SWAPKIN_DIR/active"
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 10 3600 10 $((3 * DAY)) 60
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "Claude is not watched" work "$(cat "$SWAPKIN_DIR/active")"
+assert_eq "Codex is" codex02 "$(cat "$CX/active")"
+
+sw_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"claude\",\"codex\"]}"
+unset CODEX_HOME
+sw_account work 1.0 0.2
+sw_account other 0.1 0.1
+echo work > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "with no Codex accounts at all, check exits cleanly" 0 "$SW_RC"
+assert_eq "and Claude is still handled" other "$(cat "$SWAPKIN_DIR/active")"
+assert_true test ! -e "$SWAPKIN_DIR/providers/codex"
+
+echo "60. Claude: an untrusted roomiest account does not hide a usable one"
+sw_sandbox '{"autoSwitch":true,"alertAt":90}'
+sw_account spent 0.2 1.0
+sw_account a-stale 0.05 0.05
+sw_account b-fresh 0.1 0.1
+# a-stale has the most room, but its figures are three hours old.
+touch -d '3 hours ago' "$SWAPKIN_DIR/a-stale/usage.json"
+echo spent > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "hands over to the roomiest account that can be trusted" b-fresh "$(cat "$SWAPKIN_DIR/active")"
+assert_contains "and says so" "$(cat "$NOTIFY_LOG")" "Switched to b-fresh"
+assert_not_contains "without claiming no account has room" "$(cat "$NOTIFY_LOG")" "No other account has room"
+
+echo "61. Codex: a roomiest candidate with a corrupt login does not hide a usable one"
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+cx_account work user-A acct-A
+cx_account a-broken user-B acct-B
+cx_account codex02 user-C acct-C
+cx_live work
+printf '{"tokens":' > "$CX/a-broken/auth.json"
+# A corrupt login has no identity, so the probe leaves these figures alone.
+jq -n --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{limits:[{label:"5h window",percent:0.01,resetsAt:"2099-01-01T00:00:00Z"},{label:"Weekly",percent:0.01,resetsAt:"2099-01-01T00:00:00Z"}], updatedAt:$u}' \
+  > "$CX/a-broken/usage.json"
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-C acct-C 30 3600 30 $((3 * DAY)) 60
+cx_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "hands over to the next usable account" codex02 "$(cat "$CX/active")"
+assert_eq "the live login follows" user-C "$(codex_user_of "$LIVE_AUTH")"
+assert_contains "and says so" "$(cat "$NOTIFY_LOG")" "Codex: switched to codex02"
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"
@@ -1486,7 +1771,8 @@ if grep -qF "$LIVE_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$CODEX_WS2_RACE" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$CODEX_Q_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$CODEX_API_KEY" "$ALL_OUTPUT_LOG" 2>/dev/null \
-   || grep -qF "$SW_TOKEN_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null; then
+   || grep -qF "$SW_TOKEN_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CX_SW_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null; then
   bad "no captured test output contains any fixture token string"
 else
   ok "no captured test output contains any fixture token string"

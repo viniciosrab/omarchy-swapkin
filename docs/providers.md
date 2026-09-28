@@ -47,7 +47,11 @@ moving files around.
 - `swapkin usage` — with no `-p`/`SWAPKIN_PROVIDER`, probes every provider in
   the background and waits. With `-p`, probes just that one (as `usage`
   always did for Claude).
-- `swapkin check` — always Claude's watchdog pass, regardless of `-p`.
+- `swapkin check` — one watchdog pass, regardless of `-p`: Claude by default,
+  plus Codex when `autoSwitchProviders` lists it (see the README's Settings).
+  The watchdog lives in `bin/lib/watchdog.sh`; an adapter can refine it with
+  `plausible_login`, `p_watch_fresh`, `p_watch_switched` and
+  `P_WATCH_RESETS_EXPIRE` (described at the top of that file).
 - `swapkin env [id]` — for cold providers, prints `export KEY=value` lines
   for the active account (paths and names only, never a token). With no id,
   prints one block per cold provider. Put it in a shell rc:

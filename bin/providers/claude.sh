@@ -3,6 +3,8 @@
 # Claude Code adapter. Moved out of the old single-provider bin/swapkin
 # unchanged: behaviour, storage layout ($ACCOUNTS/<name>/, $ACCOUNTS/active)
 # and every helper here are byte-for-byte what shipped before providers existed.
+# The watchdog that used to live here (`swapkin check`) is now shared by every
+# watched provider, in bin/lib/watchdog.sh.
 #
 # Settings, sessions, skills, hooks and MCP logins stay where they are. A switch
 # only swaps the Claude login (claudeAiOauth in .credentials.json) and the account

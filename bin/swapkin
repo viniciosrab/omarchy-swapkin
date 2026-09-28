@@ -517,7 +517,8 @@ Usage: swapkin [-p|--provider ID] <command>
   remove <name>   Forget a saved account
   save            Store the live login back into the active account (hot only)
   usage           Refresh rate limits; with no -p, probes every provider
-  check           One watchdog pass for Claude: refresh, warn, hand over when spent
+  check           One watchdog pass: refresh, warn, hand over when spent (Claude,
+                  plus Codex when autoSwitchProviders lists it; -p is ignored)
   cost            Today's tokens priced at API rates (an estimate, as JSON)
   statusline      The active account, coloured, for a status line
   providers --json

@@ -6,7 +6,12 @@
 #   - profiles, active, account_dir, p_use and p_probe (the usual contract);
 #   - plausible_login <account>, when defined: a candidate must pass it;
 #   - p_watch_fresh <account> <windows...>, when defined: whether a candidate's
-#     figures can be trusted. Without it, usage.json must be under 2 hours old.
+#     figures can be trusted. Without it, usage.json must be under 2 hours old;
+#   - P_WATCH_RESETS_EXPIRE=1: figures are not fetched live, so a window whose
+#     reset has already passed reads as untouched (0%);
+#   - p_watch_switched <from> <reason> <to>, when defined: the body of the
+#     "switched" notice. Without it, open sessions follow on their next message.
+# Notices from any provider but Claude are prefixed with its name.
 # State (which warnings were sent) lives in that provider's own watch.json.
 
 CONFIG="$ACCOUNTS/config.json"
@@ -16,8 +21,15 @@ setting() { # key default
   jq -r --arg k "$1" --arg d "$2" '.[$k] // $d' "$CONFIG" 2>/dev/null || echo "$2"
 }
 
-# The providers the watchdog checks, in a fixed order. Only Claude for now.
-watch_providers() { echo claude; }
+# The providers the watchdog checks, from autoSwitchProviders: any of "claude"
+# and "codex", always in that order. Unknown items are dropped, and an empty
+# list, or anything that is not a list, means the default: Claude alone.
+watch_providers() {
+  local list
+  list=$(setting autoSwitchProviders '["claude"]' \
+    | jq -r '[.[] | strings] as $p | ["claude", "codex"] | map(select(. as $k | $p | any(.[]; . == $k))) | join(" ")' 2>/dev/null || true)
+  echo "${list:-claude}"
+}
 
 # One watchdog pass over every watched provider. Each runs in its own subshell,
 # so one adapter's functions never leak into the next, and a failure in one
@@ -29,7 +41,7 @@ watch_all() {
   [[ $- == *e* ]] && had_e=1
   for id in $(watch_providers); do
     set +e
-    ( set -e; load_adapter "$id"; mkdir -p "$(provider_root "$P_ID")"; watch_check )
+    ( set -e; load_adapter "$id"; watch_check )
     (( $? == 0 )) || rc=1
     (( had_e )) && set -e
   done
@@ -52,7 +64,14 @@ icon_for() { # account
 
 notify() { # title body account
   command -v notify-send >/dev/null || return 0
-  notify-send --app-name=Swapkin --icon="$(icon_for "${3:-}")" "$1" "$2" || true
+  notify-send --app-name=Swapkin --icon="$(icon_for "${3:-}")" "$(watch_title "$1")" "$2" || true
+}
+
+# Claude's titles stay as they always were; any other provider's name leads
+# its own, so "Codex: work is at 95% of its 5-hour window" can't be mistaken
+# for a Claude account of the same name.
+watch_title() { # title
+  if [[ $P_ID == claude ]]; then printf '%s' "$1"; else printf '%s: %s' "$P_NAME" "${1,}"; fi
 }
 
 # The label pattern of each window the watchdog can act on. The usage
@@ -74,7 +93,21 @@ window_field() { # account window field default
     "$(account_dir "$1")/usage.json" 2>/dev/null || echo "$4"
 }
 
-window_pct() { window_field "$1" "$2" percent -1; } # account window
+# Whether a window's reset, as usage.json has it, is already in the past.
+window_reset_passed() { # account window
+  local raw secs; raw=$(window_field "$1" "$2" resetsAt "")
+  [[ -n $raw ]] || return 1
+  secs=$(date -u -d "$raw" +%s 2>/dev/null) || return 1
+  (( secs <= $(date +%s) ))
+}
+
+# A window's usage (0-1), or -1 when there is no figure for it. When figures
+# are not fetched live (P_WATCH_RESETS_EXPIRE), a window that reset since they
+# were taken has started over, so it reads as 0.
+window_pct() { # account window
+  if [[ ${P_WATCH_RESETS_EXPIRE:-0} == 1 ]] && window_reset_passed "$1" "$2"; then echo 0; return; fi
+  window_field "$1" "$2" percent -1
+}
 
 # Whether a usage fraction (0-1) has reached a percentage. The tiny margin keeps
 # float noise (0.29 * 100 = 28.999...) from missing an exact hit.
@@ -148,8 +181,11 @@ tightest_of() { # account windows...
 }
 
 # The account with the most room left in its tightest watched window, ignoring
-# the one passed in. An account that already reached the switch threshold in any
-# watched window has no room. With the weekly window alone this is the old
+# the one passed in. Every account is filtered before it is ranked: one that
+# already reached the switch threshold in any watched window has no room, and
+# one that can't be verified (usable_candidate) is never handed over to, so an
+# untrusted account with more room never hides a usable one. Among the usable
+# ones the ranking is unchanged; with the weekly window alone it is the old
 # weekly ranking.
 roomiest() { # account-to-ignore switch-at windows...
   local ignore=$1 at=$2; shift 2
@@ -159,6 +195,7 @@ roomiest() { # account-to-ignore switch-at windows...
     pct=$(tightest_of "$name" "$@")
     awk -v p="$pct" 'BEGIN{exit !(p >= 0)}' || continue
     reached "$pct" "$at" && continue
+    usable_candidate "$name" "$@" || continue
     if awk -v p="$pct" -v b="$best_pct" 'BEGIN{exit !(p < b)}'; then
       best="$name"
       best_pct="$pct"
@@ -226,8 +263,6 @@ watch_check() {
   (( ${#news[@]} )) || [[ $handover == true ]] || return 0
 
   local other; other=$(roomiest "$cur" "$at" "${windows[@]}")
-  # Never hand over to an account that cannot be verified.
-  if [[ -n $other ]] && ! usable_candidate "$other" "${windows[@]}"; then other=""; fi
   local switched=false failed=false
   if [[ $handover == true && -n $other ]]; then
     # Take the same lock a `use` from the panel would, so the watchdog's
@@ -259,7 +294,9 @@ watch_check() {
       (( i )) && reason+=" and "
       reason+=$(window_spent "${spent[$i]}")
     done
-    notify "Switched to $other" "$cur $reason. Open sessions follow on their next message." "$other"
+    local body="$cur $reason. Open sessions follow on their next message."
+    declare -F p_watch_switched >/dev/null && body=$(p_watch_switched "$cur" "$reason" "$other")
+    notify "Switched to $other" "$body" "$other"
   else
     # A switch that did not happen still owes the warnings due, and a spent
     # account keeps retrying on later checks whatever stage is saved.

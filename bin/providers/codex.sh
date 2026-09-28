@@ -433,3 +433,47 @@ p_probe() { # name
 }
 
 p_plan() { jq -r '.tierLabel // empty' "$(account_dir "$1")/usage.json" 2>/dev/null; }
+
+# --- the watchdog (bin/lib/watchdog.sh), when autoSwitchProviders has "codex" ---
+
+# Codex figures are never fetched live: p_probe reads them from the account's
+# last session on this machine, so a window that reset since then has room.
+P_WATCH_RESETS_EXPIRE=1
+
+# A candidate the watchdog may hand over to: a saved account whose login file,
+# when there is one, holds a ChatGPT identity or an API key. A corrupt one is
+# skipped. One with no file at all (a keyring login) is left to p_use, which
+# checks that it still signs in.
+plausible_login() { # account
+  [[ -f $(account_dir "$1")/codex.json ]] || return 1
+  local src; src=$(store_of "$1")
+  [[ -f $src ]] || src=$(legacy_source "$1")
+  [[ -n $src && -f $src ]] || return 0
+  [[ -n $(codex_identity "$src") ]] || is_apikey_login "$src"
+}
+
+# Whether a candidate's figures can be trusted: always, for Codex. Claude's
+# rule (usage.json under 2 hours old) does not fit here: p_probe rewrites
+# usage.json on every check, and its figures are the rate limits of the
+# account's last session, which for an idle account can be days old. But an
+# account nobody uses can't see its usage go up, only down when a window
+# resets, so an old figure is an upper bound on its usage now. Each watched
+# window therefore has room when its reset has passed (window_pct reads it as
+# 0) or when its figure, however old, is below autoSwitchAt, which is what the
+# watchdog's ranking already checks. That bound assumes the account isn't in
+# use on another machine at the same time; if it is, the worst case is a
+# switch to a spent account, and the next check hands over again.
+p_watch_fresh() { return 0; } # account windows...
+
+# The "switched" notice. The live login changed, but a running codex keeps
+# the account it started with until it is restarted. When the switch could not
+# go in place (no live auth.json, or an API-key login), only sessions started
+# through swapkin follow.
+p_watch_switched() { # from reason to
+  local body="$1 $2. Running Codex sessions keep $1 until they are restarted."
+  local want; want=$(codex_identity "$(store_of "$3")")
+  if [[ -z $want || ! -f $(live_auth) || $(codex_identity "$(live_auth)") != "$want" ]]; then
+    body+=" The switch could not go in place, so start new sessions with swapkin run codex."
+  fi
+  printf '%s\n' "$body"
+}
