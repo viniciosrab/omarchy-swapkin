@@ -8,8 +8,8 @@ import "Budget.js" as Budget
 
 Panel {
   id: root
-  moduleName: "io.github.sirallap.swapkin"
-  ipcTarget: "io.github.sirallap.swapkin"
+  moduleName: "io.github.viniciosrab.swapkin"
+  ipcTarget: "io.github.viniciosrab.swapkin"
   manageIpc: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground

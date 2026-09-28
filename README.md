@@ -42,13 +42,13 @@ it, so settings, sessions, skills, hooks and MCP logins are untouched.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/sirallap/omarchy-swapkin --enable
+omarchy plugin add https://github.com/viniciosrab/omarchy-swapkin --enable
 ```
 
 The widget replaces Omarchy's built-in Agents widget in the bar. To go back:
 
 ```bash
-omarchy plugin remove io.github.sirallap.swapkin
+omarchy plugin remove io.github.viniciosrab.swapkin
 ```
 
 ## First run
@@ -184,7 +184,7 @@ Behaviour lives in `~/.local/share/swapkin/config.json`:
 The watchdog interval and the weekly budget are widget settings:
 
 ```bash
-omarchy bar set io.github.sirallap.swapkin watchIntervalMin 5 --json
+omarchy bar set io.github.viniciosrab.swapkin watchIntervalMin 5 --json
 ```
 
 `budgetSpread` (`Working days` or `Every day`), `budgetDays` (`Mon,Tue,Wed,Thu,Fri`),
