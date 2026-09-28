@@ -594,6 +594,43 @@ else
   rm -rf "$SYNC_DIR"
 fi
 
+# ================================ 23. add prompts for a name when none is given ==
+echo "23. add with no name prompts for one (the panel's add button passes none)"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+mkdir -p "$S/codex-home"
+mk_stub codex "
+case \"\$1 \$2\" in
+  'login status') echo 'Logged in using ChatGPT'; exit 0 ;;
+esac
+"
+out=$(printf 'prompted\n' | CODEX_HOME="$S/codex-home" "$SWAPKIN" -p codex add 2>&1); rc=$?
+echo "$out" >> "$ALL_OUTPUT_LOG"
+assert_eq "codex add with the name typed at the prompt exits 0" 0 "$rc"
+assert_true test -f "$SWAPKIN_DIR/providers/codex/prompted/codex.json"
+assert_contains "the prompt asks for an account name" "$out" "Name for this account"
+
+out2=$(printf '\n' | CODEX_HOME="$S/codex-home" "$SWAPKIN" -p codex add 2>&1); rc2=$?
+echo "$out2" >> "$ALL_OUTPUT_LOG"
+assert_true [ "$rc2" -ne 0 ]
+assert_contains "an empty answer still fails with the usage line" "$out2" "usage: swapkin -p codex add <name>"
+
+# A fresh data dir, so this is a first account again rather than a sign-in.
+out4=$(printf 'nonewline' | SWAPKIN_DIR="$S/data-eof" CODEX_HOME="$S/codex-home" "$SWAPKIN" -p codex add 2>&1); rc4=$?
+echo "$out4" >> "$ALL_OUTPUT_LOG"
+assert_eq "a name ending at EOF without a newline is kept" 0 "$rc4"
+assert_true test -f "$S/data-eof/providers/codex/nonewline/codex.json"
+
+# A caller that keeps stdin open without writing must not hang the prompt,
+# which runs under the switch lock.
+start=$SECONDS
+out3=$(SWAPKIN_PROMPT_TIMEOUT=1 CODEX_HOME="$S/codex-home" "$SWAPKIN" -p codex add 2>&1 < <(sleep 8 2>/dev/null)); rc3=$?
+echo "$out3" >> "$ALL_OUTPUT_LOG"
+assert_true [ "$rc3" -ne 0 ]
+assert_true [ $(( SECONDS - start )) -lt 5 ]
+assert_contains "a silent stdin times out into the usage line" "$out3" "usage: swapkin -p codex add <name>"
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"

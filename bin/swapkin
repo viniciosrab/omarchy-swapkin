@@ -560,7 +560,20 @@ case "$cmd" in
            # (idempotent), since the stored pointer can disagree with gh's
            # real active login (M9).
            if [[ ${P_ALWAYS_SWITCH:-0} != 1 && $(active) == "$2" ]]; then echo "Already on $2"; else p_use "$2"; fi ;;
-      add) declare -F p_add >/dev/null || die "add is not supported for $provider"; p_add "${2:-}" "${3:-}" ;;
+      add) declare -F p_add >/dev/null || die "add is not supported for $provider"
+           name="${2:-}"
+           # The panel's add button passes no name, so ask for one here rather
+           # than in each adapter. The prompt goes to stderr explicitly: read -p
+           # stays silent when stdin is not a terminal. The read is bounded
+           # because it runs under the switch lock: a caller that holds stdin
+           # open without writing must fail with the usage line, not hang.
+           # Only a timeout (status > 128) drops the answer; plain EOF keeps a
+           # name typed without a trailing newline.
+           if [[ -z $name ]]; then
+             printf 'Name for this account (for example work or personal): ' >&2
+             read -r -t "${SWAPKIN_PROMPT_TIMEOUT:-120}" name || { rc=$?; (( rc <= 128 )) || name=""; }
+           fi
+           p_add "$name" "${3:-}" ;;
       colour|color) set_colour "${2:?usage: swapkin colour <name> <#rrggbb>}" "${3:?usage: swapkin colour <name> <#rrggbb>}" ;;
       remove) cmd_remove "${2:?usage: swapkin remove <name>}" ;;
       save) declare -F p_save >/dev/null && p_save || die "save is not supported for $provider" ;;

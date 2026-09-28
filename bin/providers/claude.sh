@@ -107,9 +107,6 @@ pending_login() {
 # throwaway config dir, so the shared ~/.claude is never touched by the login.
 p_add() {
   local name="${1:-}"
-  if [[ -z $name ]]; then
-    read -rp "Name for this account (for example work or personal): " name
-  fi
   valid_name "$name"
   [[ -f $(account_dir "$name")/oauth.json ]] && die "'$name' already exists"
 
