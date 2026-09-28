@@ -91,11 +91,14 @@ Each one switches a different way:
   | `claudeAiOauth` in `.credentials.json` | `mcpOAuth` (Slack, Figma, …) |
   | The account keys in `.claude.json`: profile, user id, model access, org defaults, extra-usage state | Projects, history, onboarding, machine ids, settings, skills, hooks |
 
-- **Codex CLI — new sessions.** Codex reads its login from `$CODEX_HOME`, so
-  `swapkin use` only moves a pointer to which account's home a *new* `codex`
-  process gets. A Codex session already running keeps whatever it started
-  with. See [below](#codex-and-other-new-session-tools) for how to point a
-  shell or a launch at the current account.
+- **Codex CLI — new sessions.** Switching writes the account's saved login
+  into `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`), which a plain
+  `codex`, `codex login status` and bar usage monitors all read, so they use
+  the new account right away. A Codex session already running keeps the old
+  account until you restart it. The switch refuses to overwrite a live login
+  that isn't one of your saved accounts; save it first with `swapkin -p codex
+  add <name>`. With a keyring login (no `auth.json` on disk) only the pointer
+  moves; see [below](#codex-and-other-new-session-tools).
 - **Copilot CLI — new sessions.** Copilot has no login file of its own; it
   rides on `gh`'s account. Switching runs `gh auth switch`, so new Copilot CLI
   sessions (and anything else that asks `gh` who's signed in, including `git
@@ -109,9 +112,12 @@ refresh-token rotation.
 
 ## Codex and other new-session tools
 
-`swapkin use` alone won't change a Codex (or Copilot CLI) session that's
-already open — it only changes what the *next* one gets. Two ways to make
-that automatic:
+Codex follows a switch on its own when its login lives in `auth.json`
+(the default): new sessions and bar monitors read the swapped file, and only
+sessions already running need a restart. A Codex login kept in the system
+keyring, or a tool of your own that reads its home from an environment
+variable, only follows in a session launched with the active account's
+environment:
 
 ```bash
 eval "$(swapkin env)"      # add to your shell rc; sets CODEX_HOME etc. per shell
@@ -120,7 +126,15 @@ swapkin run codex           # or launch straight into the active account
 
 `swapkin env [id]` prints the active account's environment as `export`
 lines (no id switches every provider it knows); `swapkin run <id> [-- args]`
-runs that provider's own CLI with the same environment already set.
+runs that provider's own CLI with the same environment already set. A Codex
+account with its own saved `auth.json` needs nothing here, so it exports
+nothing.
+
+Upgrading from a version where Codex needed this: remove the
+`eval "$(swapkin env)"` line from your shell rc if Codex was its only reason,
+or at least open a new shell. An old shell may still carry a `CODEX_HOME`
+that points into Swapkin's own folder; Swapkin ignores that one when it
+switches, but a `codex` started from that shell would still read it.
 
 ## Your own tools
 

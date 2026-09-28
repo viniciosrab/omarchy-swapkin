@@ -679,6 +679,503 @@ assert_eq "a regular file still exits 0" 0 "$rc"
 assert_contains "a regular file is left alone" "$(cat "$BIN/swapkin")" "echo mine"
 assert_contains "and link says why it did nothing" "$out" "not touching"
 
+# ================== 25-31. codex switches in place: ~/.codex/auth.json follows ==
+# Fake logins only: an id_token is base64url(header).base64url(claims).sig with
+# made-up claims, and every refresh token is a fixture string that section 19
+# checks never reaches captured output.
+b64url() { printf '%s' "$1" | base64 -w0 | tr '+/' '-_' | tr -d '='; }
+fake_codex_auth() { # file user_id account_id plan refresh_token
+  local claims jwt
+  claims=$(jq -cn --arg u "$2" --arg a "$3" --arg p "$4" \
+    '{"https://api.openai.com/auth":{chatgpt_user_id:$u, chatgpt_account_id:$a, chatgpt_plan_type:$p}}')
+  jwt="$(b64url '{"alg":"none","typ":"JWT"}').$(b64url "$claims").fakesig"
+  mkdir -p "$(dirname "$1")"
+  jq -n --arg j "$jwt" --arg a "$3" --arg r "$5" \
+    '{auth_mode:"chatgpt", OPENAI_API_KEY:null, tokens:{id_token:$j, access_token:"fake-access", refresh_token:$r, account_id:$a}, last_refresh:"2026-09-01T00:00:00Z"}' > "$1"
+  chmod 600 "$1"
+}
+# The identity swapkin must see: the chatgpt_user_id claim of the id_token.
+codex_user_of() { # auth.json
+  local body; body=$(jq -r '.tokens.id_token' "$1" 2>/dev/null | cut -d. -f2 | tr '_-' '/+')
+  while (( ${#body} % 4 )); do body+="="; done
+  base64 -d <<<"$body" 2>/dev/null | jq -r '."https://api.openai.com/auth".chatgpt_user_id // empty' 2>/dev/null
+}
+refresh_of() { jq -r '.tokens.refresh_token' "$1" 2>/dev/null; }
+sum_of() { md5sum "$1" 2>/dev/null | cut -d' ' -f1; }
+# Like sk, but keeps swapkin's own exit status in rc (sk returns printf's).
+sk_rc() { out=$("$@" 2>&1); rc=$?; echo "$out" >> "$ALL_OUTPUT_LOG"; }
+CODEX_A_OLD="codex-refresh-A-old-DDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+CODEX_A_ROTATED="codex-refresh-A-rotated-EEEEEEEEEEEEEEEEEEEEEEEE"
+CODEX_B_TOKEN="codex-refresh-B-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+CODEX_B_ROTATED="codex-refresh-B-rotated-GGGGGGGGGGGGGGGGGGGGGGGG"
+CODEX_C_TOKEN="codex-refresh-C-HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH"
+CODEX_Z_TOKEN="codex-refresh-Z-IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"
+CODEX_WS1_TOKEN="codex-refresh-ws1-JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ"
+CODEX_WS2_TOKEN="codex-refresh-ws2-KKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
+CODEX_WS2_ROTATED="codex-refresh-ws2-rotated-LLLLLLLLLLLLLLLLLLLLLL"
+CODEX_WS2_RACE="codex-refresh-ws2-race-MMMMMMMMMMMMMMMMMMMMMMMMM"
+CODEX_Q_TOKEN="codex-refresh-Q-NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN"
+CODEX_API_KEY="fake-sk-codex-api-key-OOOOOOOOOOOOOOOOOOOOOOOO"
+
+echo "25. codex use migrates a legacy layout into per-account stores and swaps ~/.codex/auth.json"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+unset CODEX_HOME
+mk_stub pgrep 'exit 1'
+mk_stub codex 'exit 0'
+CX="$SWAPKIN_DIR/providers/codex"
+LIVE_AUTH="$HOME/.codex/auth.json"
+fake_codex_auth "$LIVE_AUTH" user-A acct-A plus "$CODEX_A_OLD"
+fake_codex_auth "$CX/codex02/home/auth.json" user-B acct-B pro "$CODEX_B_TOKEN"
+mkdir -p "$CX/work"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+jq -n '{colour:"#7fa7d9"}' > "$CX/work/meta.json"
+jq -n --arg h "$CX/codex02/home" '{home:$h}' > "$CX/codex02/codex.json"
+jq -n '{colour:"#d97757"}' > "$CX/codex02/meta.json"
+echo work > "$CX/active"
+
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "use codex02 exits 0" 0 "$rc"
+assert_eq "work's store was migrated from the live login" user-A "$(codex_user_of "$CX/work/auth.json")"
+assert_eq "codex02's store was migrated from its own home" user-B "$(codex_user_of "$CX/codex02/auth.json")"
+assert_eq "the live auth.json now holds codex02's login" user-B "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "active pointer is codex02" codex02 "$(cat "$CX/active")"
+assert_eq "the live auth.json is mode 600" 600 "$(stat -c %a "$LIVE_AUTH")"
+assert_eq "work's store is mode 600" 600 "$(stat -c %a "$CX/work/auth.json")"
+assert_eq "codex02's store is mode 600" 600 "$(stat -c %a "$CX/codex02/auth.json")"
+assert_true test -f "$CX/codex02/home/auth.json"
+assert_contains "use says new sessions and monitors follow" "$out" "codex02"
+
+sums_before="$(sum_of "$CX/work/auth.json") $(sum_of "$CX/codex02/auth.json") $(sum_of "$LIVE_AUTH")"
+sk "$SWAPKIN" -p codex use codex02 >/dev/null
+sums_after="$(sum_of "$CX/work/auth.json") $(sum_of "$CX/codex02/auth.json") $(sum_of "$LIVE_AUTH")"
+assert_eq "a second use changes nothing" "$sums_before" "$sums_after"
+
+echo "26. switching back saves the rotated live login and restores the other account"
+# Codex refreshed while codex02 was live: the refresh token rotated in place.
+fake_codex_auth "$LIVE_AUTH" user-B acct-B pro "$CODEX_B_ROTATED"
+# A later change to a legacy home must not be migrated again over a store.
+fake_codex_auth "$CX/codex02/home/auth.json" user-Z acct-Z pro "$CODEX_Z_TOKEN"
+sk_rc "$SWAPKIN" -p codex use work
+assert_eq "use work exits 0" 0 "$rc"
+assert_eq "the live auth.json is back on work" user-A "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "codex02's store kept the rotated refresh token" "$CODEX_B_ROTATED" "$(refresh_of "$CX/codex02/auth.json")"
+assert_eq "codex02's store was not re-migrated from its legacy home" user-B "$(codex_user_of "$CX/codex02/auth.json")"
+assert_eq "active pointer is work" work "$(cat "$CX/active")"
+
+echo "27. use codex02 saves work's rotated login back and warns about running sessions"
+fake_codex_auth "$LIVE_AUTH" user-A acct-A plus "$CODEX_A_ROTATED"
+mk_stub pgrep 'echo 4242'
+sk_rc "$SWAPKIN" -p codex use codex02
+mk_stub pgrep 'exit 1'
+assert_eq "use codex02 exits 0" 0 "$rc"
+assert_eq "work's store holds its latest live refresh token" "$CODEX_A_ROTATED" "$(refresh_of "$CX/work/auth.json")"
+assert_eq "the live auth.json holds codex02 again" "$CODEX_B_ROTATED" "$(refresh_of "$LIVE_AUTH")"
+assert_eq "the live auth.json is still mode 600" 600 "$(stat -c %a "$LIVE_AUTH")"
+assert_contains "running Codex sessions are told to restart" "$out" "restart"
+
+echo "28. an unknown live login is never overwritten"
+fake_codex_auth "$LIVE_AUTH" user-C acct-C plus "$CODEX_C_TOKEN"
+sums_before="$(sum_of "$CX/work/auth.json") $(sum_of "$CX/codex02/auth.json") $(sum_of "$LIVE_AUTH") $(cat "$CX/active")"
+sk_rc "$SWAPKIN" -p codex use work
+sums_after="$(sum_of "$CX/work/auth.json") $(sum_of "$CX/codex02/auth.json") $(sum_of "$LIVE_AUTH") $(cat "$CX/active")"
+assert_true [ "$rc" -ne 0 ]
+assert_eq "live, stores and active are unchanged" "$sums_before" "$sums_after"
+assert_contains "the refusal says how to save that login first" "$out" "swapkin -p codex add <name>"
+fake_codex_auth "$LIVE_AUTH" user-B acct-B pro "$CODEX_B_ROTATED"
+
+echo "29. codex usage attributes each rollout to the account that wrote it"
+rollout() { # file user used_percent_5h account
+  mkdir -p "$(dirname "$1")"
+  # An empty user or account leaves that creator field out, as older codex did.
+  jq -cn --arg u "$2" --arg a "$4" '{type:"session_meta", payload:({id:"s"}
+    + (if $u == "" then {} else {creator_user_id:$u} end)
+    + (if $a == "" then {} else {creator_account_id:$a} end))}' > "$1"
+  jq -cn --argjson p "$3" '{type:"event_msg", payload:{rate_limits:{primary:{used_percent:$p, window_minutes:300, resets_at:1790000000}}}}' >> "$1"
+}
+SESS="$HOME/.codex/sessions/2026/09/28"
+rollout "$SESS/rollout-2026-09-28T10-00-00-a.jsonl" user-A 11 acct-A
+rollout "$SESS/rollout-2026-09-28T11-00-00-b.jsonl" user-B 77 acct-B
+rollout "$CX/codex02/home/sessions/2026/09/20/rollout-2026-09-20T09-00-00-b.jsonl" user-B 5 acct-B
+# The newest file of all belongs to nobody saved here; it must not be used.
+rollout "$SESS/rollout-2026-09-28T12-00-00-c.jsonl" user-C 99 acct-C
+touch -d '2026-09-20 09:00' "$CX/codex02/home/sessions/2026/09/20/rollout-2026-09-20T09-00-00-b.jsonl"
+touch -d '2026-09-28 10:00' "$SESS/rollout-2026-09-28T10-00-00-a.jsonl"
+touch -d '2026-09-28 11:00' "$SESS/rollout-2026-09-28T11-00-00-b.jsonl"
+touch -d '2026-09-28 12:00' "$SESS/rollout-2026-09-28T12-00-00-c.jsonl"
+sk "$SWAPKIN" -p codex usage >/dev/null
+assert_eq "work's usage comes from work's own rollout" 0.11 "$(jq -r '.limits[0].percent' "$CX/work/usage.json" 2>/dev/null)"
+assert_eq "codex02's usage comes from its newest own rollout" 0.77 "$(jq -r '.limits[0].percent' "$CX/codex02/usage.json" 2>/dev/null)"
+assert_eq "work's plan is read from its store's id_token" plus "$(jq -r '.tierLabel' "$CX/work/usage.json" 2>/dev/null)"
+assert_eq "codex02's plan is read from its store's id_token" pro "$(jq -r '.tierLabel' "$CX/codex02/usage.json" 2>/dev/null)"
+
+echo "30. env codex no longer points a migrated account at its legacy home"
+out=$(sk "$SWAPKIN" env codex)
+assert_not_contains "env codex does not export codex02's legacy home" "$out" "$CX/codex02/home"
+assert_not_contains "env codex exports no CODEX_HOME for a migrated account" "$out" "CODEX_HOME"
+
+echo "31. with no live auth.json (keyring or signed out) use stays pointer-only and says why"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+mk_stub codex "
+case \"\$1 \$2\" in
+  'login status') echo 'Logged in using ChatGPT'; exit 0 ;;
+esac
+"
+CX="$SWAPKIN_DIR/providers/codex"
+mkdir -p "$CX/work" "$CX/codex02" "$HOME/.codex"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+jq -n --arg h "$S/codex02-home" '{home:$h}' > "$CX/codex02/codex.json"
+echo work > "$CX/active"
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "pointer-only use exits 0" 0 "$rc"
+assert_eq "active pointer is codex02" codex02 "$(cat "$CX/active")"
+assert_true test ! -e "$HOME/.codex/auth.json"
+assert_contains "use says why ~/.codex cannot follow" "$out" "no auth.json"
+
+echo "32. two workspaces of one ChatGPT user are told apart by account id"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+unset CODEX_HOME
+mk_stub pgrep 'exit 1'
+mk_stub codex 'exit 0'
+CX="$SWAPKIN_DIR/providers/codex"
+LIVE_AUTH="$HOME/.codex/auth.json"
+mkdir -p "$CX/ws1" "$CX/ws2"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/ws1/codex.json"
+jq -n --arg h "$CX/ws2/home" '{home:$h}' > "$CX/ws2/codex.json"
+fake_codex_auth "$CX/ws1/auth.json" user-U acct-X plus "$CODEX_WS1_TOKEN"
+fake_codex_auth "$CX/ws2/auth.json" user-U acct-Y team "$CODEX_WS2_TOKEN"
+# Signed in by hand to the other workspace, which then rotated its token.
+fake_codex_auth "$LIVE_AUTH" user-U acct-Y team "$CODEX_WS2_ROTATED"
+echo ws1 > "$CX/active"
+ws1_sum=$(sum_of "$CX/ws1/auth.json")
+sk_rc "$SWAPKIN" -p codex use ws2
+assert_eq "use ws2 exits 0" 0 "$rc"
+assert_eq "the other workspace's store is never overwritten" "$ws1_sum" "$(sum_of "$CX/ws1/auth.json")"
+assert_eq "the live login was saved back to its own workspace" "$CODEX_WS2_ROTATED" "$(refresh_of "$CX/ws2/auth.json")"
+assert_eq "the live auth.json holds ws2's latest login" "$CODEX_WS2_ROTATED" "$(refresh_of "$LIVE_AUTH")"
+assert_eq "active pointer is ws2" ws2 "$(cat "$CX/active")"
+
+SESS="$HOME/.codex/sessions/2026/09/28"
+rollout "$SESS/rollout-2026-09-28T10-00-00-x.jsonl" user-U 10 acct-X
+rollout "$SESS/rollout-2026-09-28T11-00-00-y.jsonl" user-U 60 acct-Y
+touch -d '2026-09-28 10:00' "$SESS/rollout-2026-09-28T10-00-00-x.jsonl"
+touch -d '2026-09-28 11:00' "$SESS/rollout-2026-09-28T11-00-00-y.jsonl"
+sk "$SWAPKIN" -p codex usage >/dev/null
+assert_eq "ws1's usage comes from its own workspace only" 0.1 "$(jq -r '.limits[0].percent' "$CX/ws1/usage.json" 2>/dev/null)"
+assert_eq "ws2's usage comes from its own workspace only" 0.6 "$(jq -r '.limits[0].percent' "$CX/ws2/usage.json" 2>/dev/null)"
+
+echo "33. a failed save-back aborts the switch before the live login is touched"
+snapshot() { echo "$(sum_of "$CX/ws1/auth.json") $(sum_of "$CX/ws2/auth.json") $(sum_of "$LIVE_AUTH") $(cat "$CX/active")"; }
+before=$(snapshot)
+mk_stub chmod 'exit 1'
+sk_rc "$SWAPKIN" -p codex use ws1
+rm -f "$STUBS/chmod"
+assert_true [ "$rc" -ne 0 ]
+assert_eq "live, stores and active are unchanged after a failed copy" "$before" "$(snapshot)"
+assert_eq "no temp file is left next to the store" "" "$(find "$CX/ws2" -maxdepth 1 -name 'auth.json.*')"
+assert_contains "the failure says the login could not be saved" "$out" "could not save"
+chmod 500 "$CX/ws2"
+sk_rc "$SWAPKIN" -p codex use ws1
+chmod 700 "$CX/ws2"
+assert_true [ "$rc" -ne 0 ]
+assert_eq "a read-only store folder changes nothing either" "$before" "$(snapshot)"
+
+echo "34. a token refresh landing mid-switch aborts it without overwriting the new login"
+REAL_MV=$(command -v mv)
+RACE_MARKER="$S/race-armed"; : > "$RACE_MARKER"
+fake_codex_auth "$S/race-new.json" user-U acct-Y team "$CODEX_WS2_RACE"
+# Right after the save-back lands in ws2's store, a running codex refreshes.
+mk_stub mv "
+'$REAL_MV' \"\$@\"; rc=\$?
+if [[ -f '$RACE_MARKER' && \${@: -1} == '$CX/ws2/auth.json' ]]; then
+  rm -f '$RACE_MARKER'; cat '$S/race-new.json' > '$LIVE_AUTH'
+fi
+exit \$rc
+"
+ws1_sum=$(sum_of "$CX/ws1/auth.json")
+sk_rc "$SWAPKIN" -p codex use ws1
+rm -f "$STUBS/mv"
+assert_true [ "$rc" -ne 0 ]
+assert_eq "the refreshed live login is not overwritten" "$CODEX_WS2_RACE" "$(refresh_of "$LIVE_AUTH")"
+assert_eq "active pointer is still ws2" ws2 "$(cat "$CX/active")"
+assert_eq "ws1's store is unchanged" "$ws1_sum" "$(sum_of "$CX/ws1/auth.json")"
+assert_contains "the abort says Codex refreshed its login meanwhile" "$out" "refreshed"
+assert_true test ! -e "$RACE_MARKER"
+
+echo "35. with no live auth.json, env still points the active account at its own home"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+mk_stub codex "
+case \"\$1 \$2\" in
+  'login status') echo 'Logged in using ChatGPT'; exit 0 ;;
+esac
+"
+CX="$SWAPKIN_DIR/providers/codex"
+mkdir -p "$CX/work" "$CX/codex02" "$HOME/.codex"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+jq -n --arg h "$S/codex02-home" '{home:$h}' > "$CX/codex02/codex.json"
+fake_codex_auth "$CX/codex02/auth.json" user-B acct-B pro "$CODEX_B_TOKEN"
+echo work > "$CX/active"
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "pointer-only use exits 0" 0 "$rc"
+assert_contains "the pointer-only message names the ways to follow the switch" "$out" "swapkin run codex"
+out=$(sk "$SWAPKIN" env codex)
+assert_contains "env exports CODEX_HOME for the pointer-only switch" "$out" "export CODEX_HOME="
+assert_contains "env points at codex02's own home" "$out" "$S/codex02-home"
+
+echo "36. an inherited CODEX_HOME inside swapkin's own folder is ignored; any other is honoured"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+mk_stub codex 'exit 0'
+CX="$SWAPKIN_DIR/providers/codex"
+LIVE_AUTH="$HOME/.codex/auth.json"
+fake_codex_auth "$LIVE_AUTH" user-A acct-A plus "$CODEX_A_OLD"
+fake_codex_auth "$CX/codex02/home/auth.json" user-B acct-B pro "$CODEX_B_TOKEN"
+mkdir -p "$CX/work"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+jq -n --arg h "$CX/codex02/home" '{home:$h}' > "$CX/codex02/codex.json"
+echo work > "$CX/active"
+legacy_sum=$(sum_of "$CX/codex02/home/auth.json")
+sk_rc env CODEX_HOME="$CX/codex02/home" "$SWAPKIN" -p codex use codex02
+assert_eq "use with a leftover CODEX_HOME exits 0" 0 "$rc"
+assert_eq "~/.codex/auth.json followed the switch" user-B "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "the legacy home named by CODEX_HOME is untouched" "$legacy_sum" "$(sum_of "$CX/codex02/home/auth.json")"
+out=$(sk env CODEX_HOME="$CX/codex02/home" "$SWAPKIN" env codex)
+assert_not_contains "env never re-exports the leftover legacy home" "$out" "$CX/codex02/home"
+
+fake_codex_auth "$S/elsewhere/auth.json" user-B acct-B pro "$CODEX_B_ROTATED"
+home_sum=$(sum_of "$LIVE_AUTH")
+sk_rc env CODEX_HOME="$S/elsewhere" "$SWAPKIN" -p codex use work
+assert_eq "use with a CODEX_HOME outside swapkin exits 0" 0 "$rc"
+assert_eq "that CODEX_HOME's auth.json is the one switched" user-A "$(codex_user_of "$S/elsewhere/auth.json")"
+assert_eq "~/.codex is left alone then" "$home_sum" "$(sum_of "$LIVE_AUTH")"
+assert_eq "codex02's store got the rotated login back" "$CODEX_B_ROTATED" "$(refresh_of "$CX/codex02/auth.json")"
+
+echo "37. rollouts written before creator ids existed are attributed without guessing"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+unset CODEX_HOME
+mk_stub pgrep 'exit 1'
+mk_stub codex 'exit 0'
+CX="$SWAPKIN_DIR/providers/codex"
+LIVE_AUTH="$HOME/.codex/auth.json"
+fake_codex_auth "$LIVE_AUTH" user-A acct-A plus "$CODEX_A_OLD"
+for acct in work ws1 ws2 solo; do mkdir -p "$CX/$acct"; done
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+for acct in ws1 ws2 solo; do jq -n --arg h "$CX/$acct/home" '{home:$h}' > "$CX/$acct/codex.json"; done
+fake_codex_auth "$CX/work/auth.json" user-A acct-A plus "$CODEX_A_OLD"
+fake_codex_auth "$CX/ws1/auth.json" user-U acct-X plus "$CODEX_WS1_TOKEN"
+fake_codex_auth "$CX/ws2/auth.json" user-U acct-Y team "$CODEX_WS2_TOKEN"
+fake_codex_auth "$CX/solo/auth.json" user-S acct-S pro "$CODEX_B_TOKEN"
+echo work > "$CX/active"
+SESS="$HOME/.codex/sessions/2026/09/28"
+# Only a user id: solo is the one saved account with user-S.
+rollout "$SESS/rollout-2026-09-28T10-00-00-s.jsonl" user-S 21 ""
+# No creator at all, in ws1's own legacy home.
+rollout "$CX/ws1/home/sessions/2026/09/20/rollout-2026-09-20T10-30-00-x.jsonl" "" 44 ""
+# No creator at all, in the live home: only the live-home account (work).
+rollout "$SESS/rollout-2026-09-28T11-00-00-n.jsonl" "" 33 ""
+# Only a user id shared by two workspaces: nobody can claim it.
+rollout "$SESS/rollout-2026-09-28T12-00-00-u.jsonl" user-U 99 ""
+touch -d '2026-09-28 10:00' "$SESS/rollout-2026-09-28T10-00-00-s.jsonl"
+touch -d '2026-09-28 10:30' "$CX/ws1/home/sessions/2026/09/20/rollout-2026-09-20T10-30-00-x.jsonl"
+touch -d '2026-09-28 11:00' "$SESS/rollout-2026-09-28T11-00-00-n.jsonl"
+touch -d '2026-09-28 12:00' "$SESS/rollout-2026-09-28T12-00-00-u.jsonl"
+sk "$SWAPKIN" -p codex usage >/dev/null
+pct_of() { jq -r '.limits[0].percent' "$CX/$1/usage.json" 2>/dev/null; }
+assert_eq "a user-id-only rollout counts for the one account with that user" 0.21 "$(pct_of solo)"
+assert_eq "a creator-less rollout in the live home counts for the live-home account" 0.33 "$(pct_of work)"
+assert_eq "a creator-less rollout in a legacy home counts for that home's account" 0.44 "$(pct_of ws1)"
+assert_true test ! -e "$CX/ws2/usage.json"
+
+echo "38. a failed write into the live login is rolled back, and a failed rollback says where the login is"
+BOGUS="$S/bogus.json"
+fake_codex_auth "$BOGUS" user-Q acct-Q plus "$CODEX_Q_TOKEN"
+REAL_MV=$(command -v mv)
+MV_COUNT="$S/mv-count"
+# The first move into the live file lands the wrong login; the second (the
+# rollback) fails when ROLLBACK_FAILS is set.
+mk_stub mv "
+if [[ \${@: -1} == '$LIVE_AUTH' ]]; then
+  n=\$(cat '$MV_COUNT' 2>/dev/null || echo 0); echo \$((n + 1)) > '$MV_COUNT'
+  if (( n == 0 )); then '$REAL_MV' \"\$@\" && cat '$BOGUS' > '$LIVE_AUTH'; exit \$?; fi
+  [[ -n \${ROLLBACK_FAILS:-} ]] && exit 1
+fi
+exec '$REAL_MV' \"\$@\"
+"
+rm -f "$MV_COUNT"
+sk_rc env ROLLBACK_FAILS=1 "$SWAPKIN" -p codex use ws1
+assert_true [ "$rc" -ne 0 ]
+assert_contains "a failed rollback says the live file could not be restored" "$out" "could not be restored"
+assert_contains "and names the saved copy to recover from" "$out" "$CX/work/auth.json"
+assert_eq "active pointer is unchanged" work "$(cat "$CX/active")"
+# Recover the way the message says to, then try the rollback that works.
+cp "$CX/work/auth.json" "$LIVE_AUTH"
+rm -f "$MV_COUNT"
+sk_rc "$SWAPKIN" -p codex use ws1
+rm -f "$STUBS/mv"
+assert_true [ "$rc" -ne 0 ]
+assert_contains "a successful rollback says the live file still holds the owner" "$out" "still holds 'work'"
+assert_eq "the live login was rolled back to work" user-A "$(codex_user_of "$LIVE_AUTH")"
+
+echo "39. API-key logins (no ChatGPT identity) fall back to a pointer-only switch"
+fake_apikey_auth() { # file
+  mkdir -p "$(dirname "$1")"
+  jq -n --arg k "$CODEX_API_KEY" '{auth_mode:"apikey", OPENAI_API_KEY:$k, tokens:null, last_refresh:null}' > "$1"
+  chmod 600 "$1"
+}
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+unset CODEX_HOME
+mk_stub pgrep 'exit 1'
+mk_stub codex 'exit 0'
+CX="$SWAPKIN_DIR/providers/codex"
+LIVE_AUTH="$HOME/.codex/auth.json"
+mkdir -p "$CX/work" "$CX/apikey"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+jq -n --arg h "$CX/apikey/home" '{home:$h}' > "$CX/apikey/codex.json"
+fake_codex_auth "$LIVE_AUTH" user-A acct-A plus "$CODEX_A_OLD"
+fake_codex_auth "$CX/work/auth.json" user-A acct-A plus "$CODEX_A_OLD"
+fake_apikey_auth "$CX/apikey/home/auth.json"
+fake_apikey_auth "$CX/apikey/auth.json"
+echo work > "$CX/active"
+snap() { echo "$(sum_of "$LIVE_AUTH") $(for a in "$@"; do sum_of "$CX/$a/auth.json"; done)"; }
+before=$(snap work apikey)
+sk_rc "$SWAPKIN" -p codex use apikey
+assert_eq "switching to an API-key login exits 0" 0 "$rc"
+assert_eq "the live login and every store are untouched" "$before" "$(snap work apikey)"
+assert_eq "active pointer is apikey" apikey "$(cat "$CX/active")"
+assert_contains "the reason names the API-key login" "$out" "API-key login"
+assert_not_contains "it never asks to sign in again" "$out" "sign in again"
+assert_not_contains "it never asks to add the account" "$out" "codex add"
+out=$(sk "$SWAPKIN" env codex)
+assert_contains "env points the API-key account at its own home" "$out" "export CODEX_HOME=$CX/apikey/home"
+
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+CX="$SWAPKIN_DIR/providers/codex"
+LIVE_AUTH="$HOME/.codex/auth.json"
+mkdir -p "$CX/work" "$CX/codex02"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+jq -n --arg h "$CX/codex02/home" '{home:$h}' > "$CX/codex02/codex.json"
+fake_apikey_auth "$LIVE_AUTH"
+fake_apikey_auth "$CX/work/auth.json"
+fake_codex_auth "$CX/codex02/home/auth.json" user-B acct-B pro "$CODEX_B_TOKEN"
+fake_codex_auth "$CX/codex02/auth.json" user-B acct-B pro "$CODEX_B_TOKEN"
+echo work > "$CX/active"
+before=$(snap work codex02)
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "switching away from a live API-key login exits 0" 0 "$rc"
+assert_eq "the live API-key login and every store are untouched" "$before" "$(snap work codex02)"
+assert_eq "active pointer is codex02" codex02 "$(cat "$CX/active")"
+assert_contains "the reason says the live login has no ChatGPT identity" "$out" "no ChatGPT identity"
+assert_not_contains "it never asks to add the live login" "$out" "codex add"
+out=$(sk "$SWAPKIN" env codex)
+assert_contains "env points codex02 at its own home" "$out" "export CODEX_HOME=$CX/codex02/home"
+
+echo "40. a corrupt login is an error, not an API-key login"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+unset CODEX_HOME
+mk_stub pgrep 'exit 1'
+mk_stub codex 'exit 0'
+CX="$SWAPKIN_DIR/providers/codex"
+LIVE_AUTH="$HOME/.codex/auth.json"
+mkdir -p "$CX/work" "$CX/codex02"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+jq -n --arg h "$CX/codex02/home" '{home:$h}' > "$CX/codex02/codex.json"
+fake_codex_auth "$LIVE_AUTH" user-A acct-A plus "$CODEX_A_OLD"
+fake_codex_auth "$CX/work/auth.json" user-A acct-A plus "$CODEX_A_OLD"
+fake_codex_auth "$CX/codex02/home/auth.json" user-B acct-B pro "$CODEX_B_TOKEN"
+printf '{"auth_mode":"chatgpt","tokens":{"id_token":"trunc' > "$CX/codex02/auth.json"
+echo work > "$CX/active"
+snap_all() { echo "$(snap work codex02 | tr "\n" " ")$(cat "$CX/active")"; }
+before=$(snap_all)
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_true [ "$rc" -ne 0 ]
+assert_contains "a corrupt target store asks to sign in again" "$out" "'codex02' has no usable login; sign in again with: swapkin -p codex add codex02"
+assert_eq "nothing changed after a corrupt target store" "$before" "$(snap_all)"
+
+fake_codex_auth "$CX/codex02/auth.json" user-B acct-B pro "$CODEX_B_TOKEN"
+printf '{"tokens":{"id_token":"trunc' > "$LIVE_AUTH"
+echo work > "$CX/active"
+before=$(snap_all)
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_true [ "$rc" -ne 0 ]
+assert_contains "a corrupt live file is reported" "$out" "unreadable or has no usable login"
+assert_eq "nothing changed after a corrupt live file" "$before" "$(snap_all)"
+
+echo "41. creator-less rollouts in the live home stop counting once switches go in place"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+CX="$SWAPKIN_DIR/providers/codex"
+LIVE_AUTH="$HOME/.codex/auth.json"
+mkdir -p "$CX/work" "$CX/codex02"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+jq -n --arg h "$CX/codex02/home" '{home:$h}' > "$CX/codex02/codex.json"
+fake_codex_auth "$LIVE_AUTH" user-A acct-A plus "$CODEX_A_OLD"
+fake_codex_auth "$CX/work/auth.json" user-A acct-A plus "$CODEX_A_OLD"
+fake_codex_auth "$CX/codex02/auth.json" user-B acct-B pro "$CODEX_B_TOKEN"
+echo work > "$CX/active"
+SESS="$HOME/.codex/sessions/2026/09/28"
+OLD_ROLLOUT="$SESS/rollout-old-n.jsonl"
+rollout "$OLD_ROLLOUT" "" 12 ""
+touch -d "@$(( $(date +%s) - 86400 ))" "$OLD_ROLLOUT"
+sk "$SWAPKIN" -p codex usage >/dev/null
+assert_eq "before any in-place switch a creator-less live rollout counts" 0.12 "$(jq -r '.limits[0].percent' "$CX/work/usage.json" 2>/dev/null)"
+sk_rc "$SWAPKIN" -p codex use codex02
+SINCE_FILE="$CX/.inplace_since"
+since=$(cat "$SINCE_FILE" 2>/dev/null)
+assert_true test -n "$since"
+NEW_ROLLOUT="$SESS/rollout-new-n.jsonl"
+rollout "$NEW_ROLLOUT" "" 88 ""
+touch -d "@$(( ${since:-$(date +%s)} + 60 ))" "$NEW_ROLLOUT"
+LEGACY_ROLLOUT="$CX/codex02/home/sessions/2026/09/28/rollout-legacy-n.jsonl"
+rollout "$LEGACY_ROLLOUT" "" 55 ""
+touch -d "@$(( ${since:-$(date +%s)} + 120 ))" "$LEGACY_ROLLOUT"
+sk "$SWAPKIN" -p codex usage >/dev/null
+assert_eq "a creator-less live rollout after the switch-over does not count" 0.12 "$(jq -r '.limits[0].percent' "$CX/work/usage.json" 2>/dev/null)"
+assert_eq "a creator-less rollout in a separate legacy home still counts" 0.55 "$(jq -r '.limits[0].percent' "$CX/codex02/usage.json" 2>/dev/null)"
+sk_rc "$SWAPKIN" -p codex use work
+assert_eq "a later switch never moves the switch-over time" "$since" "$(cat "$SINCE_FILE" 2>/dev/null)"
+
+echo "42. a busy account never pushes a quieter one's rollouts out of the scan"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+CX="$SWAPKIN_DIR/providers/codex"
+LIVE_AUTH="$HOME/.codex/auth.json"
+mkdir -p "$CX/work" "$CX/codex02"
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/work/codex.json"
+jq -n --arg h "$CX/codex02/home" '{home:$h}' > "$CX/codex02/codex.json"
+fake_codex_auth "$LIVE_AUTH" user-B acct-B pro "$CODEX_B_TOKEN"
+fake_codex_auth "$CX/work/auth.json" user-A acct-A plus "$CODEX_A_OLD"
+fake_codex_auth "$CX/codex02/auth.json" user-B acct-B pro "$CODEX_B_TOKEN"
+echo codex02 > "$CX/active"
+SESS="$HOME/.codex/sessions/2026/09/28"
+rollout "$SESS/rollout-quiet-a.jsonl" user-A 17 acct-A
+touch -d '2026-09-01 08:00' "$SESS/rollout-quiet-a.jsonl"
+base=$(date -d '2026-09-28 10:00' +%s)
+for i in $(seq 1 60); do
+  rollout "$SESS/rollout-busy-b-$i.jsonl" user-B 70 acct-B
+  touch -d "@$(( base + i * 60 ))" "$SESS/rollout-busy-b-$i.jsonl"
+done
+sk "$SWAPKIN" -p codex usage >/dev/null
+assert_eq "the quiet account still gets its own figure" 0.17 "$(jq -r '.limits[0].percent' "$CX/work/usage.json" 2>/dev/null)"
+assert_eq "the busy account gets its own figure" 0.7 "$(jq -r '.limits[0].percent' "$CX/codex02/usage.json" 2>/dev/null)"
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"
@@ -686,7 +1183,19 @@ if grep -qF "$LIVE_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$STALE_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$PERSONAL_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$GH_SECRET_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
-   || grep -qF "$SENTINEL_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null; then
+   || grep -qF "$SENTINEL_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_A_OLD" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_A_ROTATED" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_B_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_B_ROTATED" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_C_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_Z_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_WS1_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_WS2_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_WS2_ROTATED" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_WS2_RACE" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_Q_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_API_KEY" "$ALL_OUTPUT_LOG" 2>/dev/null; then
   bad "no captured test output contains any fixture token string"
 else
   ok "no captured test output contains any fixture token string"
