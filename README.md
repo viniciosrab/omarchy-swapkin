@@ -45,6 +45,12 @@ it, so settings, sessions, skills, hooks and MCP logins are untouched.
 omarchy plugin add https://github.com/viniciosrab/omarchy-swapkin --enable
 ```
 
+Once the shell loads the plugin, `swapkin` is on your PATH: the service links
+`~/.local/bin/swapkin` to the installed plugin (run `swapkin link` by hand from
+the plugin's `bin/` if that folder isn't on your PATH). Only a missing entry or
+a dangling link left by a removed plugin is (re)pointed; a regular file, a link
+to another program or a live link to another swapkin copy is never replaced.
+
 The widget replaces Omarchy's built-in Agents widget in the bar. To go back:
 
 ```bash

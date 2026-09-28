@@ -631,6 +631,54 @@ assert_true [ "$rc3" -ne 0 ]
 assert_true [ $(( SECONDS - start )) -lt 5 ]
 assert_contains "a silent stdin times out into the usage line" "$out3" "usage: swapkin -p codex add <name>"
 
+# ======================================= 24. link puts swapkin on PATH safely ==
+echo "24. link symlinks swapkin into ~/.local/bin without clobbering anything foreign"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH"
+BIN="$HOME/.local/bin"
+out=$("$SWAPKIN" link 2>&1); rc=$?
+echo "$out" >> "$ALL_OUTPUT_LOG"
+assert_eq "link exits 0 when ~/.local/bin/swapkin is absent" 0 "$rc"
+assert_eq "link points ~/.local/bin/swapkin at this swapkin" "$(readlink -f "$SWAPKIN")" "$(readlink -f "$BIN/swapkin" 2>/dev/null)"
+
+"$SWAPKIN" link >/dev/null 2>&1; rc=$?
+assert_eq "link is idempotent" 0 "$rc"
+
+mkdir -p "$S/old-plugin/bin"
+ln -sfn "$S/old-plugin/bin/swapkin" "$BIN/swapkin"
+"$SWAPKIN" link >/dev/null 2>&1
+assert_eq "a stale link to another swapkin is repointed here" "$(readlink -f "$SWAPKIN")" "$(readlink -f "$BIN/swapkin" 2>/dev/null)"
+
+mkdir -p "$S/alias"; ln -sfn "$(dirname "$(readlink -f "$SWAPKIN")")" "$S/alias/bin"
+ln -sfn "$S/alias/bin/swapkin" "$BIN/swapkin"
+out=$("$SWAPKIN" link 2>&1); rc=$?
+echo "$out" >> "$ALL_OUTPUT_LOG"
+assert_eq "a link that already resolves here through another path exits 0" 0 "$rc"
+assert_not_contains "and stays quiet about it" "$out" "not touching"
+
+mkdir -p "$S/dev-checkout/bin"
+printf '#!/bin/sh\necho dev\n' > "$S/dev-checkout/bin/swapkin"; chmod +x "$S/dev-checkout/bin/swapkin"
+ln -sfn "$S/dev-checkout/bin/swapkin" "$BIN/swapkin"
+out=$("$SWAPKIN" link 2>&1); rc=$?
+echo "$out" >> "$ALL_OUTPUT_LOG"
+assert_eq "a live link to another swapkin copy still exits 0" 0 "$rc"
+assert_eq "a live link to another swapkin copy is left alone" "$S/dev-checkout/bin/swapkin" "$(readlink "$BIN/swapkin")"
+assert_contains "and link says it left the other copy alone" "$out" "not touching"
+
+ln -sfn /usr/bin/true "$BIN/swapkin"
+out=$("$SWAPKIN" link 2>&1); rc=$?
+echo "$out" >> "$ALL_OUTPUT_LOG"
+assert_eq "a link to some other program still exits 0" 0 "$rc"
+assert_eq "a link to some other program is left alone" "/usr/bin/true" "$(readlink "$BIN/swapkin")"
+
+rm -f "$BIN/swapkin"; printf '#!/bin/sh\necho mine\n' > "$BIN/swapkin"
+out=$("$SWAPKIN" link 2>&1); rc=$?
+echo "$out" >> "$ALL_OUTPUT_LOG"
+assert_eq "a regular file still exits 0" 0 "$rc"
+assert_contains "a regular file is left alone" "$(cat "$BIN/swapkin")" "echo mine"
+assert_contains "and link says why it did nothing" "$out" "not touching"
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"

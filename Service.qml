@@ -13,6 +13,14 @@ Item {
   readonly property int intervalMinutes: settings && settings.watchIntervalMin > 0
     ? settings.watchIntervalMin : 5
 
+  // Puts `swapkin` on PATH (~/.local/bin) once per shell start, so the CLI the
+  // README shows works from any terminal. It never replaces a foreign file.
+  Process {
+    id: linkProcess
+    command: [service.tool, "link"]
+    running: true
+  }
+
   Process {
     id: watchProcess
     command: [service.tool, "check"]

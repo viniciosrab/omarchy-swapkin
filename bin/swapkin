@@ -437,6 +437,32 @@ cmd_usage_all() {
   wait
 }
 
+# Put this swapkin on PATH as ~/.local/bin/swapkin, so the commands the README
+# shows work from any terminal. Only an absent entry or a dangling symlink to a
+# swapkin (a removed or moved plugin) is (re)pointed. A regular file, a link to
+# another program, or a live link to another swapkin copy (a dev checkout, say)
+# was put there on purpose and is left alone.
+cmd_link() {
+  local self bin_dir link current
+  self="$(readlink -f "$0")"
+  bin_dir="${SWAPKIN_BIN_DIR:-$HOME/.local/bin}"
+  link="$bin_dir/swapkin"
+  if [[ -L $link ]]; then
+    current="$(readlink "$link")"
+    # Already here, even through a relative or symlinked path.
+    [[ $(readlink -f "$link") == "$self" ]] && return 0
+    if [[ $(basename "$current") != swapkin || -e $link ]]; then
+      echo "swapkin: $link points at $current; not touching it" >&2
+      return 0
+    fi
+  elif [[ -e $link ]]; then
+    echo "swapkin: $link exists and is not a symlink; not touching it" >&2
+    return 0
+  fi
+  mkdir -p "$bin_dir"
+  ln -sfn "$self" "$link"
+}
+
 cmd_env() { # [id]
   local id="${1:-}"
   if [[ -n $id ]]; then
@@ -499,6 +525,7 @@ Usage: swapkin [-p|--provider ID] <command>
   env [id]        export KEY=value lines for a cold provider's active account
   run <id> [-- args]
                   Exec that provider's CLI with its active account's env
+  link            Symlink this swapkin into ~/.local/bin (never over a foreign file)
   demo on|off     Toggle demo mode (serves invented data, changes nothing real)
 
 Provider: -p/--provider ID or SWAPKIN_PROVIDER (default: claude)
@@ -609,6 +636,7 @@ case "$cmd" in
     [[ ${2:-} == --json ]] || { help >&2; exit 2; }
     cmd_providers_json ;;
   env) cmd_env "${2:-}" ;;
+  link) cmd_link ;;
   run)
     shift || true
     run_id="${1:?usage: swapkin run <id> [-- args]}"; shift || true
