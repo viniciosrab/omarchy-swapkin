@@ -411,8 +411,9 @@ Panel {
   // A card's figure: its session window, or its week when it has no session
   // figure (Budget.headline says why).
   function headlineText(a) {
-    var w = Budget.headline(limitWindows(a))
-    return w ? " · " + Budget.headlineText(w.percent, root.percentMode) : ""
+    var windows = limitWindows(a)
+    var w = Budget.headline(windows)
+    return w ? " · " + Budget.headlineText(w.percent, root.percentMode, Budget.weekSpent(windows)) : ""
   }
 
   // One chip per provider whose paying account Swapkin knows, for the strip
@@ -1606,6 +1607,8 @@ Panel {
     // The session window, like the account cards; the week stands in when
     // there is no session figure.
     readonly property var tight: Budget.headline(windows)
+    // A spent week blocks the account, so the row shows it full and says so.
+    readonly property bool weekSpent: Budget.weekSpent(windows)
     readonly property bool hasAccounts: !!provider && (provider.accounts || []).length > 0
 
     implicitHeight: rowBody.implicitHeight + Style.space(16)
@@ -1666,8 +1669,8 @@ Panel {
         Meter {
           width: parent.width - percentLabel.width - parent.spacing
           anchors.verticalCenter: parent.verticalCenter
-          value: providerRow.tight ? Budget.shown(providerRow.tight.percent, root.percentMode) : -1
-          alarming: !!providerRow.tight && providerRow.tight.percent >= 0.9
+          value: providerRow.tight ? Budget.shown(providerRow.weekSpent ? 1 : providerRow.tight.percent, root.percentMode) : -1
+          alarming: !!providerRow.tight && (providerRow.weekSpent || providerRow.tight.percent >= 0.9)
         }
 
         Text {
@@ -1675,7 +1678,7 @@ Panel {
           textFormat: Text.PlainText
           width: Style.space(34)
           horizontalAlignment: Text.AlignRight
-          text: providerRow.tight ? Budget.percentText(providerRow.tight.percent, root.percentMode) : ""
+          text: !providerRow.tight ? "" : providerRow.weekSpent ? "week spent" : Budget.percentText(providerRow.tight.percent, root.percentMode)
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

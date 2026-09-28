@@ -196,8 +196,20 @@ function headline(windows) {
   return best
 }
 
-// An account card's figure for its headline window: "88% left" or "12% used".
-function headlineText(used, mode) {
+// Whether an account's week is used up. The weekly limit blocks the account
+// until it resets however much of the session is left, so a session figure
+// alone would show room that cannot be used.
+function weekSpent(windows) {
+  var list = windows || []
+  for (var i = 0; i < list.length; i++)
+    if (list[i] && list[i].kind === "weekly" && list[i].percent >= 1) return true
+  return false
+}
+
+// An account card's figure for its headline window: "88% left" or "12% used",
+// or "week spent" when the week blocks the account (see weekSpent).
+function headlineText(used, mode, spent) {
+  if (spent) return "week spent"
   return paceLine(used, null, mode)
 }
 
@@ -243,5 +255,5 @@ if (typeof module !== "undefined") module.exports = {
   config: config, defaultConfig: defaultConfig, DEFAULTS: DEFAULTS, segments: segments, workMs: workMs, walk: walk,
   pace: pace, whenText: whenText, paceLine: paceLine, forecastLine: forecastLine, resetLine: resetLine,
   durationText: durationText, remaining: remaining, shown: shown, percentText: percentText,
-  headline: headline, headlineText: headlineText, accountEmail: accountEmail
+  headline: headline, headlineText: headlineText, weekSpent: weekSpent, accountEmail: accountEmail
 }

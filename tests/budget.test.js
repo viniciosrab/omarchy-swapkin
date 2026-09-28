@@ -132,6 +132,17 @@ assert.strictEqual(B.headline(undefined), null)
 // A card reads "N% left" in Remaining and "N% used" in Used.
 assert.strictEqual(B.headlineText(0.25, "Remaining"), "75% left")
 assert.strictEqual(B.headlineText(0.25, "Used"), "25% used")
+// A spent week blocks the account whatever the session says, so the card and the
+// provider row say so instead of a session figure that looks like room.
+assert.strictEqual(B.weekSpent([sess, win("weekly", 1)]), true)
+assert.strictEqual(B.weekSpent([sess, win("weekly", 1.2)]), true)
+assert.strictEqual(B.weekSpent([sess, wk]), false)
+assert.strictEqual(B.weekSpent([win("session", 1)]), false)
+assert.strictEqual(B.weekSpent([]), false)
+assert.strictEqual(B.weekSpent(undefined), false)
+assert.strictEqual(B.headlineText(0, "Remaining", true), "week spent")
+assert.strictEqual(B.headlineText(0, "Used", true), "week spent")
+assert.strictEqual(B.headlineText(0.25, "Remaining", false), "75% left")
 // The email an account is signed in with, as the panel prints it; nothing when
 // swapkin could not read one.
 assert.strictEqual(B.accountEmail({ email: "work@example.test" }), "work@example.test")
