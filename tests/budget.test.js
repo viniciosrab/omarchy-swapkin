@@ -132,4 +132,11 @@ assert.strictEqual(B.headline(undefined), null)
 // A card reads "N% left" in Remaining and "N% used" in Used.
 assert.strictEqual(B.headlineText(0.25, "Remaining"), "75% left")
 assert.strictEqual(B.headlineText(0.25, "Used"), "25% used")
+// The email an account is signed in with, as the panel prints it; nothing when
+// swapkin could not read one.
+assert.strictEqual(B.accountEmail({ email: "work@example.test" }), "work@example.test")
+assert.strictEqual(B.accountEmail({ email: "  me@example.test " }), "me@example.test")
+assert.strictEqual(B.accountEmail({ email: null }), "")
+assert.strictEqual(B.accountEmail({}), "")
+assert.strictEqual(B.accountEmail(null), "")
 console.log("budget: all passed")

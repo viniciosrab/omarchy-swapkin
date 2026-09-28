@@ -25,6 +25,8 @@ it, so settings, sessions, skills, hooks and MCP logins are untouched.
 - **Switch accounts from the bar.** Every account is a card. Move over one to
   preview its limits, then switch. Cards and the provider list show what is
   left of the 5-hour session window (the week when there is no session figure).
+  The highlighted account's sign-in email (Claude Code, Codex) shows under the
+  cards, and on hover over a card.
   Keys: `↑` `↓` provider, `←` `→` account,
   `a` switch, `m` manage, `r` refresh.
 - **Each account keeps its own colour**, shown in the bar icon, the account list

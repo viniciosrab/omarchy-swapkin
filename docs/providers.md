@@ -43,7 +43,11 @@ moving files around.
 
 - `swapkin providers --json` — every provider that is installed or has a
   saved account, with its accounts and their usage. Read-only, no network:
-  it reads each account's already-saved `usage.json`.
+  it reads each account's already-saved `usage.json`. Each account also has
+  an `email` (or `null`): the address its saved login says it belongs to, read
+  by an adapter's optional `p_email <name>` (Claude Code: `oauthAccount` in the
+  saved `account.json`; Codex: the `email` claim of the stored `id_token`,
+  decoded locally and never printed).
 - `swapkin usage` — with no `-p`/`SWAPKIN_PROVIDER`, probes every provider in
   the background and waits. With `-p`, probes just that one (as `usage`
   always did for Claude).

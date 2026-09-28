@@ -62,6 +62,11 @@ store() { # name creds-file state-file
   mv "$dir/account.json.tmp" "$dir/account.json"
 }
 
+# The email of the profile saved with the login (oauthAccount in account.json).
+p_email() { # name
+  jq -r '.oauthAccount.emailAddress // empty | strings' "$(account_dir "$1")/account.json" 2>/dev/null
+}
+
 # Refresh tokens rotate, so the live login goes back to its profile before every switch.
 p_save() {
   local name; name=$(active)

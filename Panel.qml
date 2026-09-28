@@ -1124,6 +1124,7 @@ Panel {
                     text: modelData.name + (modelData.active ? " · active" : "")
                       + (root.accountPlan(modelData) ? "\n" + root.accountPlan(modelData) + root.headlineText(modelData) : "")
                     selected: !!root.candidate && modelData.name === root.candidate.name
+                    tooltipText: Budget.accountEmail(modelData)
                     bordered: true
                     foreground: root.accountColour(modelData)
                     fontFamily: root.fontFamily
@@ -1132,6 +1133,21 @@ Panel {
                     onClicked: root.candName = modelData.name
                   }
                 }
+              }
+
+              // Who the highlighted account is signed in as. The cards are too
+              // narrow for an address, so it gets a line of its own.
+              Text {
+                id: emailLine
+                textFormat: Text.PlainText
+                visible: root.hasAccounts && !root.managing && emailLine.text !== ""
+                width: parent.width
+                elide: Text.ElideRight
+                text: root.candidate && Budget.accountEmail(root.candidate) !== ""
+                  ? root.candidate.name + " is signed in as " + Budget.accountEmail(root.candidate) : ""
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
               }
 
               Item {

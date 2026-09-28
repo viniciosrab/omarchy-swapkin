@@ -231,10 +231,17 @@ function resetLine(resetMs, nowMs) {
   return "Resets " + whenText(resetMs, nowMs) + " · in " + durationText(resetMs - nowMs)
 }
 
+// The email an account is signed in with, as swapkin read it from the saved
+// login; empty when there is none, so the panel shows no line for it.
+function accountEmail(a) {
+  var email = a ? a.email : null
+  return email === undefined || email === null ? "" : String(email).trim()
+}
+
 // Loaded by node for the tests; QML never sees `module`.
 if (typeof module !== "undefined") module.exports = {
   config: config, defaultConfig: defaultConfig, DEFAULTS: DEFAULTS, segments: segments, workMs: workMs, walk: walk,
   pace: pace, whenText: whenText, paceLine: paceLine, forecastLine: forecastLine, resetLine: resetLine,
   durationText: durationText, remaining: remaining, shown: shown, percentText: percentText,
-  headline: headline, headlineText: headlineText
+  headline: headline, headlineText: headlineText, accountEmail: accountEmail
 }
