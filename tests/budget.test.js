@@ -113,6 +113,23 @@ assert.strictEqual(B.percentText(0.21, "Used"), "21%")
 assert.strictEqual(B.percentText(0.21, "Remaining"), "79%")
 assert.strictEqual(B.percentText(0.125, "Used"), "13%")
 assert.strictEqual(B.percentText(0.125, "Remaining"), "87%")
-assert.strictEqual(B.peakText(0.01, "Used"), "1% peak")
-assert.strictEqual(B.peakText(0.01, "Remaining"), "99% left")
+// The window an account card and a provider row stand for: the five-hour
+// session, then the week, then the fullest of whatever else there is.
+const win = (kind, percent) => ({ kind: kind, percent: percent })
+const sess = win("session", 0.25), wk = win("weekly", 0.49)
+assert.strictEqual(B.headline([wk, sess]), sess)
+assert.strictEqual(B.headline([sess, wk]), sess)
+// The first session is the account-wide one; model-scoped ones follow it.
+const modelSess = win("session", 0.9)
+assert.strictEqual(B.headline([sess, modelSess, wk]), sess)
+// No session figure: the week stands in for it.
+assert.strictEqual(B.headline([wk, win("other", 0.95)]), wk)
+// Neither (a monthly quota, a model's own cap): the fullest, as before.
+const month = win("month", 0.3), cap = win("other", 0.7)
+assert.strictEqual(B.headline([month, cap]), cap)
+assert.strictEqual(B.headline([]), null)
+assert.strictEqual(B.headline(undefined), null)
+// A card reads "N% left" in Remaining and "N% used" in Used.
+assert.strictEqual(B.headlineText(0.25, "Remaining"), "75% left")
+assert.strictEqual(B.headlineText(0.25, "Used"), "25% used")
 console.log("budget: all passed")

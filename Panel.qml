@@ -408,9 +408,11 @@ Panel {
     colourEditing = ""
   }
 
-  function peakText(a) {
-    var peak = tightest(limitWindows(a))
-    return peak ? " · " + Budget.peakText(peak.percent, root.percentMode) : ""
+  // A card's figure: its session window, or its week when it has no session
+  // figure (Budget.headline says why).
+  function headlineText(a) {
+    var w = Budget.headline(limitWindows(a))
+    return w ? " · " + Budget.headlineText(w.percent, root.percentMode) : ""
   }
 
   // One chip per provider whose paying account Swapkin knows, for the strip
@@ -1120,7 +1122,7 @@ Panel {
 
                     width: Math.max(Style.space(140), (parent.width - Style.space(8) * (root.accounts.length > 3 ? 2 : root.accounts.length - 1)) / Math.min(root.accounts.length, 3))
                     text: modelData.name + (modelData.active ? " · active" : "")
-                      + (root.accountPlan(modelData) ? "\n" + root.accountPlan(modelData) + root.peakText(modelData) : "")
+                      + (root.accountPlan(modelData) ? "\n" + root.accountPlan(modelData) + root.headlineText(modelData) : "")
                     selected: !!root.candidate && modelData.name === root.candidate.name
                     bordered: true
                     foreground: root.accountColour(modelData)
@@ -1585,7 +1587,9 @@ Panel {
     // never borrow it.
     readonly property var rowActive: root.activeAccountFor(provider)
     readonly property var windows: root.providerWindows(provider, rowActive)
-    readonly property var tight: root.tightest(windows)
+    // The session window, like the account cards; the week stands in when
+    // there is no session figure.
+    readonly property var tight: Budget.headline(windows)
     readonly property bool hasAccounts: !!provider && (provider.accounts || []).length > 0
 
     implicitHeight: rowBody.implicitHeight + Style.space(16)
