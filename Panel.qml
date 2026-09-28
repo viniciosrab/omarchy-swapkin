@@ -408,9 +408,12 @@ Panel {
     colourEditing = ""
   }
 
-  function peakText(a) {
-    var peak = tightest(limitWindows(a))
-    return peak ? " · " + Budget.peakText(peak.percent, root.percentMode) : ""
+  // A card's figure: its session window, or its week when it has no session
+  // figure (Budget.headline says why).
+  function headlineText(a) {
+    var windows = limitWindows(a)
+    var w = Budget.headline(windows)
+    return w ? " · " + Budget.headlineText(w.percent, root.percentMode, Budget.weekSpent(windows)) : ""
   }
 
   // One chip per provider whose paying account Swapkin knows, for the strip
@@ -1120,8 +1123,9 @@ Panel {
 
                     width: Math.max(Style.space(140), (parent.width - Style.space(8) * (root.accounts.length > 3 ? 2 : root.accounts.length - 1)) / Math.min(root.accounts.length, 3))
                     text: modelData.name + (modelData.active ? " · active" : "")
-                      + (root.accountPlan(modelData) ? "\n" + root.accountPlan(modelData) + root.peakText(modelData) : "")
+                      + (root.accountPlan(modelData) ? "\n" + root.accountPlan(modelData) + root.headlineText(modelData) : "")
                     selected: !!root.candidate && modelData.name === root.candidate.name
+                    tooltipText: Budget.accountEmail(modelData)
                     bordered: true
                     foreground: root.accountColour(modelData)
                     fontFamily: root.fontFamily
@@ -1130,6 +1134,21 @@ Panel {
                     onClicked: root.candName = modelData.name
                   }
                 }
+              }
+
+              // Who the highlighted account is signed in as. The cards are too
+              // narrow for an address, so it gets a line of its own.
+              Text {
+                id: emailLine
+                textFormat: Text.PlainText
+                visible: root.hasAccounts && !root.managing && emailLine.text !== ""
+                width: parent.width
+                elide: Text.ElideRight
+                text: root.candidate && Budget.accountEmail(root.candidate) !== ""
+                  ? root.candidate.name + " is signed in as " + Budget.accountEmail(root.candidate) : ""
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
               }
 
               Item {
@@ -1585,7 +1604,11 @@ Panel {
     // never borrow it.
     readonly property var rowActive: root.activeAccountFor(provider)
     readonly property var windows: root.providerWindows(provider, rowActive)
-    readonly property var tight: root.tightest(windows)
+    // The session window, like the account cards; the week stands in when
+    // there is no session figure.
+    readonly property var tight: Budget.headline(windows)
+    // A spent week blocks the account, so the row shows it full and says so.
+    readonly property bool weekSpent: Budget.weekSpent(windows)
     readonly property bool hasAccounts: !!provider && (provider.accounts || []).length > 0
 
     implicitHeight: rowBody.implicitHeight + Style.space(16)
@@ -1646,8 +1669,8 @@ Panel {
         Meter {
           width: parent.width - percentLabel.width - parent.spacing
           anchors.verticalCenter: parent.verticalCenter
-          value: providerRow.tight ? Budget.shown(providerRow.tight.percent, root.percentMode) : -1
-          alarming: !!providerRow.tight && providerRow.tight.percent >= 0.9
+          value: providerRow.tight ? Budget.shown(providerRow.weekSpent ? 1 : providerRow.tight.percent, root.percentMode) : -1
+          alarming: !!providerRow.tight && (providerRow.weekSpent || providerRow.tight.percent >= 0.9)
         }
 
         Text {
@@ -1655,7 +1678,7 @@ Panel {
           textFormat: Text.PlainText
           width: Style.space(34)
           horizontalAlignment: Text.AlignRight
-          text: providerRow.tight ? Budget.percentText(providerRow.tight.percent, root.percentMode) : ""
+          text: !providerRow.tight ? "" : providerRow.weekSpent ? "week spent" : Budget.percentText(providerRow.tight.percent, root.percentMode)
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

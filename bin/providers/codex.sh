@@ -49,14 +49,28 @@ _b64url() {
   printf '%s' "$s"
 }
 
-# The claims object of an auth.json's id_token (never the token itself), or
-# nothing when the file has no readable id_token (an API-key login, say).
-id_claims() { # auth.json
+# The decoded payload of an auth.json's id_token (never the token itself), or
+# nothing when the file has no readable id_token (an API-key login, say). The
+# signature is not checked: this only reads what the login says about itself.
+id_payload() { # auth.json
   local jwt
   jwt=$(jq -r '.tokens.id_token // empty' "$1" 2>/dev/null) || return 0
   [[ -n $jwt ]] || return 0
   base64 -d <<<"$(_b64url "$(cut -d. -f2 <<<"$jwt")")" 2>/dev/null \
-    | jq -c '."https://api.openai.com/auth" // empty' 2>/dev/null || true
+    | jq -c 'objects' 2>/dev/null || true
+}
+
+# The ChatGPT claims object of an auth.json's id_token, or nothing.
+id_claims() { # auth.json
+  id_payload "$1" | jq -c '."https://api.openai.com/auth" // empty' 2>/dev/null || true
+}
+
+# The email an account signed in with: the id_token's own email claim, from its
+# store, or from its legacy home while it has not been migrated to one yet.
+p_email() { # name
+  local auth; auth=$(store_of "$1")
+  [[ -f $auth ]] || auth="$(home_of "$1")/auth.json"
+  id_payload "$auth" | jq -r '.email // empty | strings' 2>/dev/null || true
 }
 
 # Who an auth.json belongs to, as "<user>/<workspace>": the ChatGPT user id

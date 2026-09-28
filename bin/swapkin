@@ -322,6 +322,12 @@ acct_plan() { # name
   declare -F p_plan >/dev/null && p_plan "$1" 2>/dev/null || true
 }
 
+# The email an account is signed in with, when its adapter can read one from
+# the login it saved (never over the network); empty otherwise.
+acct_email() { # name
+  declare -F p_email >/dev/null && p_email "$1" 2>/dev/null || true
+}
+
 # An account's cached usage.json (or {}) and its age in seconds (or -1 if
 # absent). A malformed or non-object usage.json (a bad provider probe, a
 # half-written file) becomes {} here instead of reaching jq downstream, so
@@ -344,9 +350,10 @@ cmd_list() { # --json or empty
       local dir; dir=$(account_dir "$name")
       local usage age; { read -r usage; read -r age; } < <(usage_of "$dir")
       rows+=("$(jq -c -n --arg name "$name" --arg cur "$cur" --arg colour "$(colour_of "$name")" \
-        --arg plan "$(acct_plan "$name")" --argjson age "$age" --argjson usage "$usage" \
+        --arg plan "$(acct_plan "$name")" --arg email "$(acct_email "$name")" --argjson age "$age" --argjson usage "$usage" \
         '{name: $name, plan: $plan, active: ($name == $cur), colour: $colour, age: $age}
          + $usage
+         + {email: (if $email == "" then null else $email end)}
          + {weekly: (($usage.limits // []) | map(select((.label // "") | ascii_downcase | test("week")))[0].percent // null)}')")
     done
     if (( ${#rows[@]} == 0 )); then echo '[]'; else printf '%s\n' "${rows[@]}" | jq -sc .; fi
@@ -388,8 +395,10 @@ provider_entry_json() { # id
       local dir; dir=$(account_dir "$name")
       local usage age; { read -r usage; read -r age; } < <(usage_of "$dir")
       accounts=$(jq -c -n --argjson accs "$accounts" --arg name "$name" --arg cur "$cur" \
-        --arg colour "$(colour_of "$name")" --arg plan "$(acct_plan "$name")" --argjson age "$age" --argjson usage "$usage" \
+        --arg colour "$(colour_of "$name")" --arg plan "$(acct_plan "$name")" --arg email "$(acct_email "$name")" \
+        --argjson age "$age" --argjson usage "$usage" \
         '$accs + [{name:$name, active: ($name == $cur), colour: $colour, plan: $plan, age: $age,
+                    email: (if $email == "" then null else $email end),
                     limits: (($usage.limits) // []), counts: (($usage.counts) // []), note: (($usage.note) // ""),
                     tierLabel: (($usage.tierLabel) // ""), updatedAt: (($usage.updatedAt) // "")}
                    + {weekly: ((($usage.limits) // []) | map(select((.label // "") | ascii_downcase | test("week")))[0].percent // null)}]')

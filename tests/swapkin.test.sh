@@ -1899,6 +1899,64 @@ assert_eq "hands over to codex02" codex02 "$(cat "$CX/active")"
 assert_eq "the daemon is restarted once" 1 "$(restarts)"
 assert_contains "the notice mentions the restart" "$(cat "$NOTIFY_LOG")" "Restarted the Codex daemon"
 
+echo "66. providers --json and list --json carry each account's sign-in email, read locally"
+S=$(sandbox)
+export HOME="$S/home" SWAPKIN_DIR="$S/data" XDG_CONFIG_HOME="$S/config" \
+       XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" PATH="$STUBS:$PATH" SWAPKIN_DEMO=0
+unset CODEX_HOME SWAPKIN_PROVIDER SWAPKIN_DEMO_FILE CLAUDE_CONFIG_DIR
+mk_stub pgrep 'exit 1'
+mk_stub codex 'exit 0'
+EMAIL_TOKEN="claude-refresh-email-PPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"
+CODEX_EMAIL_TOKEN="codex-refresh-email-QQQQQQQQQQQQQQQQQQQQQQQQQQQQ"
+# Claude: the email lives in the account's saved profile (oauthAccount).
+for n in work personal bare; do
+  mkdir -p "$SWAPKIN_DIR/$n"
+  jq -n --arg t "$EMAIL_TOKEN" '{refreshToken:$t, subscriptionType:"pro"}' > "$SWAPKIN_DIR/$n/oauth.json"
+done
+jq -n '{oauthAccount:{emailAddress:"work@example.test", displayName:"W"}}' > "$SWAPKIN_DIR/work/account.json"
+jq -n '{oauthAccount:{emailAddress:"me@example.test"}}' > "$SWAPKIN_DIR/personal/account.json"
+echo '{}' > "$SWAPKIN_DIR/bare/account.json"
+echo work > "$SWAPKIN_DIR/active"
+# Codex: the email is a claim of the stored id_token (a fake, unsigned one).
+CX="$SWAPKIN_DIR/providers/codex"
+fake_codex_email_auth() { # file email
+  local jwt
+  jwt="$(b64url '{"alg":"none","typ":"JWT"}').$(b64url "$(jq -cn --arg e "$2" \
+    '{email:$e, "https://api.openai.com/auth":{chatgpt_user_id:"user-E", chatgpt_account_id:"acct-E", chatgpt_plan_type:"plus"}}')").fakesig"
+  mkdir -p "$(dirname "$1")"
+  jq -n --arg j "$jwt" --arg r "$CODEX_EMAIL_TOKEN" \
+    '{auth_mode:"chatgpt", tokens:{id_token:$j, access_token:"fake-access", refresh_token:$r, account_id:"acct-E"}}' > "$1"
+}
+fake_codex_email_auth "$CX/cxwork/auth.json" cx@example.test
+jq -n --arg h "$HOME/.codex" '{home:$h}' > "$CX/cxwork/codex.json"
+fake_codex_auth "$CX/cxnomail/auth.json" user-F acct-F plus "$CODEX_EMAIL_TOKEN"
+jq -n --arg h "$CX/cxnomail/home" '{home:$h}' > "$CX/cxnomail/codex.json"
+mkdir -p "$CX/cxbroken"
+printf '{"tokens":{"id_token":"trunc' > "$CX/cxbroken/auth.json"
+jq -n --arg h "$CX/cxbroken/home" '{home:$h}' > "$CX/cxbroken/codex.json"
+# Not migrated yet: no store of its own, only a legacy home.
+fake_codex_email_auth "$CX/cxlegacy/home/auth.json" legacy@example.test
+jq -n --arg h "$CX/cxlegacy/home" '{home:$h}' > "$CX/cxlegacy/codex.json"
+echo cxwork > "$CX/active"
+
+out=$(sk "$SWAPKIN" providers --json)
+email_of() { jq -r --arg p "$1" --arg n "$2" '.providers[] | select(.id == $p) | .accounts[] | select(.name == $n) | .email' <<<"$out" 2>/dev/null; }
+assert_eq "claude work's email comes from its saved oauthAccount" work@example.test "$(email_of claude work)"
+assert_eq "claude personal's email comes from its saved oauthAccount" me@example.test "$(email_of claude personal)"
+assert_eq "a claude account with no oauthAccount has a null email" null "$(email_of claude bare)"
+assert_eq "codex cxwork's email comes from its id_token's email claim" cx@example.test "$(email_of codex cxwork)"
+assert_eq "a codex id_token with no email claim gives a null email" null "$(email_of codex cxnomail)"
+assert_eq "an unreadable codex login gives a null email" null "$(email_of codex cxbroken)"
+assert_eq "an account not yet migrated reads its legacy home's login" legacy@example.test "$(email_of codex cxlegacy)"
+assert_not_contains "providers --json never carries the id_token" "$out" "fakesig"
+list_out=$(sk "$SWAPKIN" -p codex list --json)
+assert_eq "list --json carries the email too" cx@example.test \
+  "$(jq -r '.[] | select(.name == "cxwork") | .email' <<<"$list_out" 2>/dev/null)"
+list_out=$(sk "$SWAPKIN" -p claude list --json)
+assert_eq "list --json has a null email when there is none" null \
+  "$(jq -r '.[] | select(.name == "bare") | .email' <<<"$list_out" 2>/dev/null)"
+assert_not_contains "list --json never carries a refresh token" "$list_out" "$EMAIL_TOKEN"
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"
@@ -1920,7 +1978,9 @@ if grep -qF "$LIVE_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$CODEX_Q_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$CODEX_API_KEY" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$SW_TOKEN_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null \
-   || grep -qF "$CX_SW_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null; then
+   || grep -qF "$CX_SW_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$EMAIL_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$CODEX_EMAIL_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null; then
   bad "no captured test output contains any fixture token string"
 else
   ok "no captured test output contains any fixture token string"

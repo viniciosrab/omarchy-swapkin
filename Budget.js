@@ -177,9 +177,40 @@ function percentText(used, mode) {
   return remaining(mode) ? leftPct(used) : pct(used)
 }
 
-// An account card's figure for its tightest window: "12% peak" or "88% left".
-function peakText(used, mode) {
-  return remaining(mode) ? leftPct(used) + " left" : pct(used) + " peak"
+// The window an account card and a provider row stand for, out of windows
+// already sorted into kinds ("session", "weekly", "month", "other"): the
+// five-hour session, since that is what the next hours of work run into. The
+// first one wins, because collectors list the account-wide window before any
+// model-scoped one (the same rule the watchdog reads usage.json by). An account
+// with no session figure (not probed yet, or a tool that has none) falls back to
+// its week, and one with neither to its fullest window, as before.
+function headline(windows) {
+  var list = windows || []
+  var kinds = ["session", "weekly"]
+  for (var k = 0; k < kinds.length; k++)
+    for (var i = 0; i < list.length; i++)
+      if (list[i] && list[i].kind === kinds[k]) return list[i]
+  var best = null
+  for (var j = 0; j < list.length; j++)
+    if (list[j] && (!best || list[j].percent > best.percent)) best = list[j]
+  return best
+}
+
+// Whether an account's week is used up. The weekly limit blocks the account
+// until it resets however much of the session is left, so a session figure
+// alone would show room that cannot be used.
+function weekSpent(windows) {
+  var list = windows || []
+  for (var i = 0; i < list.length; i++)
+    if (list[i] && list[i].kind === "weekly" && list[i].percent >= 1) return true
+  return false
+}
+
+// An account card's figure for its headline window: "88% left" or "12% used",
+// or "week spent" when the week blocks the account (see weekSpent).
+function headlineText(used, mode, spent) {
+  if (spent) return "week spent"
+  return paceLine(used, null, mode)
 }
 
 // "12% used · budget 17% · 5% under pace", the line that says whether to switch.
@@ -212,9 +243,17 @@ function resetLine(resetMs, nowMs) {
   return "Resets " + whenText(resetMs, nowMs) + " · in " + durationText(resetMs - nowMs)
 }
 
+// The email an account is signed in with, as swapkin read it from the saved
+// login; empty when there is none, so the panel shows no line for it.
+function accountEmail(a) {
+  var email = a ? a.email : null
+  return email === undefined || email === null ? "" : String(email).trim()
+}
+
 // Loaded by node for the tests; QML never sees `module`.
 if (typeof module !== "undefined") module.exports = {
   config: config, defaultConfig: defaultConfig, DEFAULTS: DEFAULTS, segments: segments, workMs: workMs, walk: walk,
   pace: pace, whenText: whenText, paceLine: paceLine, forecastLine: forecastLine, resetLine: resetLine,
-  durationText: durationText, remaining: remaining, shown: shown, percentText: percentText, peakText: peakText
+  durationText: durationText, remaining: remaining, shown: shown, percentText: percentText,
+  headline: headline, headlineText: headlineText, weekSpent: weekSpent, accountEmail: accountEmail
 }
