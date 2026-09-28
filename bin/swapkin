@@ -624,8 +624,9 @@ case "$cmd" in
       cmd_usage
     fi ;;
   check)
-    load_adapter claude
-    claude_check ;;
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/watchdog.sh"
+    watch_all ;;
   cost)
     load_adapter "$provider" || die "unknown provider '$provider'"
     if declare -F p_cost >/dev/null; then p_cost; else echo '{"today":null}'; fi ;;
