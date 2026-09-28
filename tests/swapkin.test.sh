@@ -1859,6 +1859,32 @@ sk_rc "$SWAPKIN" -p codex use work
 assert_eq "the in-place switch still happens" user-A "$(codex_user_of "$LIVE_AUTH")"
 assert_eq "another user's managed daemon is not ours to restart" 0 "$(restarts)"
 
+echo "65. the restarted daemon does not inherit the switch lock"
+cx_sandbox "{$CX_BOTH}"
+S=$(dirname "$SWAPKIN_DIR")
+cx_daemon_stubs
+# A real restart leaves a long-lived daemon behind; it must not keep fd 9.
+mk_stub codex "
+echo \"\$*\" >> '$CODEX_CALLS'
+case \"\$*\" in
+  'app-server daemon restart') ( sleep 30 & echo \$! > '$S/fake-daemon.pid' ) ; exit 0 ;;
+  'login status') echo 'Logged in using ChatGPT' ;;
+esac
+exit 0
+"
+cx_account work user-A acct-A
+cx_account codex02 user-C acct-C
+cx_live work
+touch "$DAEMON_UP"
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "the first switch exits 0" 0 "$rc"
+start=$SECONDS
+sk_rc "$SWAPKIN" -p codex use work
+assert_eq "the next switch is not blocked by the daemon" 0 "$rc"
+assert_true [ $(( SECONDS - start )) -lt 5 ]
+assert_eq "and it lands" user-A "$(codex_user_of "$LIVE_AUTH")"
+kill "$(cat "$S/fake-daemon.pid" 2>/dev/null)" 2>/dev/null || true
+
 echo "64. the watchdog's Codex hand-over restarts the daemon and says so"
 cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
 S=$(dirname "$SWAPKIN_DIR")

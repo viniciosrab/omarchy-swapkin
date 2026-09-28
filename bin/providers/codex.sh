@@ -317,7 +317,9 @@ restart_daemon() { # name
     if ! daemon_restart_wanted; then
       outcome=disabled
       echo "The Codex daemon keeps the previous account until it is restarted; $DAEMON_HINT"
-    elif cli=$(tool_bin codex) && [[ -n $cli ]] && timeout 30 "$cli" app-server daemon restart >/dev/null 2>&1; then
+    # 9>&-: the switch holds $ACCOUNTS/.lock on fd 9, and the new daemon would
+    # inherit it and keep every later switch locked out for as long as it runs.
+    elif cli=$(tool_bin codex) && [[ -n $cli ]] && timeout 30 "$cli" app-server daemon restart >/dev/null 2>&1 9>&-; then
       outcome=restarted
       echo "Restarted the Codex daemon so new sessions use $1. Sessions it was running were interrupted; bring them back with codex resume."
     else
