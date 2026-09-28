@@ -1176,6 +1176,296 @@ sk "$SWAPKIN" -p codex usage >/dev/null
 assert_eq "the quiet account still gets its own figure" 0.17 "$(jq -r '.limits[0].percent' "$CX/work/usage.json" 2>/dev/null)"
 assert_eq "the busy account gets its own figure" 0.7 "$(jq -r '.limits[0].percent' "$CX/codex02/usage.json" 2>/dev/null)"
 
+# ========== 43-48. opt-in auto-switch on the session (5-hour) window ==
+# Every account below gets a fake 40+ character login that starts with
+# SW_TOKEN_PREFIX, so the summary's leak check covers all of them at once.
+# A section-local stub collector fails, so `check` keeps the seeded usage.json
+# files exactly as written, and a notify-send stub records each notification.
+SW_TOKEN_PREFIX="session-switch-fixture-token"
+SW_STUBS="$(mktemp -d)"
+cat > "$SW_STUBS/omarchy-agent-usage-claude" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+cat > "$SW_STUBS/notify-send" <<'EOF'
+#!/usr/bin/env bash
+# The last two arguments are the title and the body.
+[[ -n ${NOTIFY_LOG:-} ]] && printf '%s | %s\n' "${@: -2:1}" "${@: -1}" >> "$NOTIFY_LOG"
+exit 0
+EOF
+chmod +x "$SW_STUBS/omarchy-agent-usage-claude" "$SW_STUBS/notify-send"
+
+SW_SESSION_RESET="2026-09-28T15:00:00.412345+00:00"
+SW_WEEKLY_RESET="2026-10-02T09:00:00+00:00"
+
+sw_sandbox() { # config-json
+  S=$(sandbox)
+  export HOME="$S/home" SWAPKIN_DIR="$S/data" CLAUDE_CONFIG_DIR="$S/home/.claude" \
+         XDG_CONFIG_HOME="$S/config" XDG_STATE_HOME="$S/state" XDG_CACHE_HOME="$S/cache" \
+         PATH="$SW_STUBS:$STUBS:$PATH" SWAPKIN_DEMO=0 NOTIFY_LOG="$S/notify.log"
+  mkdir -p "$CLAUDE_CONFIG_DIR" "$SWAPKIN_DIR"
+  jq -n --arg t "$SW_TOKEN_PREFIX-live-DDDDDDDDDDDDDDDDDDDD" \
+    '{claudeAiOauth:{refreshToken:$t, subscriptionType:"pro"}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"
+  jq -n '{theme:"dark"}' > "$CLAUDE_CONFIG_DIR/.claude.json"
+  : > "$NOTIFY_LOG"
+  printf '%s\n' "$1" > "$SWAPKIN_DIR/config.json"
+}
+
+# "-" leaves that window out of usage.json.
+sw_account() { # name session-pct weekly-pct [session-reset]
+  local dir="$SWAPKIN_DIR/$1"
+  mkdir -p "$dir"
+  jq -n --arg t "$SW_TOKEN_PREFIX-$1-EEEEEEEEEEEEEEEEEEEE" '{refreshToken:$t, subscriptionType:"pro"}' > "$dir/oauth.json"
+  echo '{}' > "$dir/account.json"
+  jq -n '{colour:"#7fa7d9"}' > "$dir/meta.json"
+  jq -n --arg s "$2" --arg w "$3" --arg sr "${4-$SW_SESSION_RESET}" --arg wr "$SW_WEEKLY_RESET" '
+    {limits: ([ (if $s == "-" then empty else {label:"Session (5-hour)", percent:($s|tonumber), resetsAt:$sr} end),
+                (if $w == "-" then empty else {label:"Weekly (7-day)", percent:($w|tonumber), resetsAt:$wr} end) ]),
+     tierLabel:"Pro"}' > "$dir/usage.json"
+}
+
+sw_check() { # runs `swapkin check`, leaves its exit code in SW_RC
+  sk_rc "$SWAPKIN" check
+  SW_RC=$rc
+}
+
+sw_notes() { wc -l < "$NOTIFY_LOG" | tr -d ' '; }
+
+echo "43. by default a spent session window neither switches nor notifies"
+sw_sandbox '{"autoSwitch":true,"alertAt":90}'
+sw_account spent 1.0 0.2
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "the default windows leave a spent session alone" spent "$(cat "$SWAPKIN_DIR/active")"
+assert_eq "no notification for the session window by default" 0 "$(sw_notes)"
+
+echo "44. with the session window enabled, a spent session hands over to the roomiest account"
+sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["weekly","session"]}'
+sw_account spent 1.0 0.2
+# Weekly alone would pick 'a' (10% weekly); its session at 60% is the tighter
+# window, so 'b' (30% in both) has the most room in its tightest window.
+sw_account a 0.6 0.1
+sw_account b 0.3 0.3
+echo spent > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "switched to the account with the most room in its tightest window" b "$(cat "$SWAPKIN_DIR/active")"
+notes=$(cat "$NOTIFY_LOG")
+assert_contains "the notification names the new account" "$notes" "Switched to b"
+assert_contains "the notification names the session window" "$notes" "spent hit its 5-hour limit"
+assert_not_contains "the notification does not blame the week" "$notes" "weekly quota"
+
+echo "45. a candidate with a spent session is skipped; with no room anywhere nothing switches"
+sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["weekly","session"]}'
+sw_account spent 1.0 0.2
+sw_account a-nosession 1.0 0.0
+sw_account z-room 0.5 0.5
+echo spent > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "an account with a spent session is never the candidate" z-room "$(cat "$SWAPKIN_DIR/active")"
+
+sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["weekly","session"]}'
+sw_account spent 1.0 0.2
+sw_account other1 1.0 0.1
+sw_account other2 0.2 1.0
+echo spent > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "no switch when every candidate has a spent window" spent "$(cat "$SWAPKIN_DIR/active")"
+notes=$(cat "$NOTIFY_LOG")
+assert_contains "the warning names the session window" "$notes" "spent is at 100% of its 5-hour window"
+assert_contains "the warning says no account has room" "$notes" "No other account has room right now."
+
+echo "46. autoSwitchAt 95 hands over at 95% session usage, not before"
+sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchAt":95,"autoSwitchWindows":["session"]}'
+sw_account spent 0.94 0.2
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "94% is below autoSwitchAt: no switch" spent "$(cat "$SWAPKIN_DIR/active")"
+assert_contains "94% is above alertAt: a warning names the account with room" "$(cat "$NOTIFY_LOG")" "roomy has 90% free"
+sw_account spent 0.95 0.2
+sw_check
+assert_eq "95% reaches autoSwitchAt: switched" roomy "$(cat "$SWAPKIN_DIR/active")"
+
+echo "47. the session warning fires once per session reset"
+sw_sandbox '{"autoSwitch":false,"alertAt":90,"autoSwitchWindows":["weekly","session"]}'
+sw_account spent 0.92 0.2 "2026-09-28T14:59:59.912345+00:00"
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "one session warning" 1 "$(sw_notes)"
+assert_contains "the warning names the session window" "$(cat "$NOTIFY_LOG")" "spent is at 92% of its 5-hour window"
+sw_check
+assert_eq "no second warning on the next check" 1 "$(sw_notes)"
+# The endpoint restamps the reset with sub-second jitter; the same window must
+# not count as a new one when that jitter crosses the hour.
+sw_account spent 0.93 0.2 "2026-09-28T15:00:00.104567+00:00"
+sw_check
+assert_eq "reset jitter across the hour is the same window" 1 "$(sw_notes)"
+# The next session window, later the same day.
+sw_account spent 0.92 0.2 "2026-09-28T20:00:00.301234+00:00"
+sw_check
+assert_eq "a new session reset warns again" 2 "$(sw_notes)"
+assert_eq "the weekly window stayed quiet throughout" 0 "$(grep -c 'of its week' "$NOTIFY_LOG")"
+
+echo "48. an old-format watch.json keeps working without re-notifying"
+sw_sandbox '{"autoSwitch":true,"alertAt":90}'
+sw_account spent 0.5 0.93
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+# The format before per-window state: account -> weekly reset date -> stage.
+jq -n --arg d "${SW_WEEKLY_RESET:0:10}" '{spent: {($d): 1}}' > "$SWAPKIN_DIR/watch.json"
+sw_check
+assert_eq "check exits cleanly on the old state" 0 "$SW_RC"
+assert_eq "the weekly warning already sent is not sent again" 0 "$(sw_notes)"
+sw_account spent 0.5 1.0
+sw_check
+assert_eq "a spent week still hands over from the old state" roomy "$(cat "$SWAPKIN_DIR/active")"
+assert_contains "the weekly switch text is unchanged" "$(cat "$NOTIFY_LOG")" "spent ran out of weekly quota. Open sessions follow on their next message."
+
+sw_sandbox '{"autoSwitch":false,"alertAt":90,"autoSwitchWindows":["weekly","session"]}'
+sw_account spent 0.95 0.93
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+jq -n --arg d "${SW_WEEKLY_RESET:0:10}" '{spent: {($d): 1}}' > "$SWAPKIN_DIR/watch.json"
+sw_check
+assert_eq "check exits cleanly with the session window on the old state" 0 "$SW_RC"
+assert_eq "only the new session warning is sent" 1 "$(sw_notes)"
+assert_contains "and it names the session window" "$(cat "$NOTIFY_LOG")" "5-hour window"
+echo '[1,2,3]' > "$SWAPKIN_DIR/watch.json"
+sw_check
+assert_eq "a malformed watch.json does not break check" 0 "$SW_RC"
+
+echo "49. invalid autoSwitchWindows / autoSwitchAt fall back to the defaults"
+for windows in '"session"' '[]' '["bogus"]' '{"session":true}'; do
+  sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":'"$windows"'}'
+  sw_account spent 1.0 0.2
+  sw_account roomy 0.1 0.1
+  echo spent > "$SWAPKIN_DIR/active"
+  sw_check
+  assert_eq "autoSwitchWindows $windows exits cleanly" 0 "$SW_RC"
+  assert_eq "autoSwitchWindows $windows means the weekly window alone" spent "$(cat "$SWAPKIN_DIR/active")"
+done
+for at in '"abc"' '150'; do
+  sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchAt":'"$at"',"autoSwitchWindows":["session"]}'
+  sw_account spent 0.99 0.2
+  sw_account roomy 0.1 0.1
+  echo spent > "$SWAPKIN_DIR/active"
+  sw_check
+  assert_eq "autoSwitchAt $at exits cleanly" 0 "$SW_RC"
+  assert_eq "autoSwitchAt $at acts as 100: 99% does not switch" spent "$(cat "$SWAPKIN_DIR/active")"
+  sw_account spent 1.0 0.2
+  sw_check
+  assert_eq "autoSwitchAt $at acts as 100: 100% switches" roomy "$(cat "$SWAPKIN_DIR/active")"
+done
+
+echo "50. session resets are keyed to the minute, and an empty reset is a placeholder"
+sw_sandbox '{"autoSwitch":false,"alertAt":90,"autoSwitchWindows":["session"]}'
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+# Real resets land on whole minutes with sub-second jitter either side.
+sw_account spent 0.92 0.2 "2026-09-28T07:39:59.912345+00:00"
+sw_check
+assert_eq "one session warning" 1 "$(sw_notes)"
+sw_account spent 0.93 0.2 "2026-09-28T07:40:00.434170+00:00"
+sw_check
+assert_eq "jitter across the minute keeps one window" 1 "$(sw_notes)"
+sw_account spent 0.92 0.2 "2026-09-28T14:29:59.912345+00:00"
+sw_check
+assert_eq "a different reset is a new window" 2 "$(sw_notes)"
+sw_account spent 0.93 0.2 "2026-09-28T14:30:00.104567+00:00"
+sw_check
+assert_eq "jitter across the half hour keeps one window" 2 "$(sw_notes)"
+assert_eq "the session key is the reset rounded to the minute" '["2026-09-28T14:30"]' \
+  "$(jq -c '.spent.session | keys' "$SWAPKIN_DIR/watch.json" 2>/dev/null)"
+
+sw_sandbox '{"autoSwitch":false,"alertAt":90,"autoSwitchWindows":["session"]}'
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+sw_account spent 0.92 0.2 ""
+sw_check
+assert_eq "check exits cleanly with an empty reset" 0 "$SW_RC"
+assert_eq "a spent window with no reset still warns" 1 "$(sw_notes)"
+assert_eq "an empty reset is kept under a placeholder key" '["none"]' \
+  "$(jq -c '.spent.session | keys' "$SWAPKIN_DIR/watch.json" 2>/dev/null)"
+sw_check
+assert_eq "no second warning while the reset stays empty" 1 "$(sw_notes)"
+sw_account spent 0.92 0.2 "2026-09-28T09:20:00.366550+00:00"
+sw_check
+assert_eq "a real reset after the placeholder warns again" 2 "$(sw_notes)"
+assert_eq "the real reset replaces the placeholder" '["2026-09-28T09:20"]' \
+  "$(jq -c '.spent.session | keys' "$SWAPKIN_DIR/watch.json" 2>/dev/null)"
+
+echo "51. while spent, every check retries the hand-over; the no-room warning is sent once"
+sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["weekly","session"]}'
+sw_account spent 1.0 0.2
+sw_account other 1.0 0.1
+echo spent > "$SWAPKIN_DIR/active"
+sw_check
+assert_eq "no candidate with room: no switch" spent "$(cat "$SWAPKIN_DIR/active")"
+assert_eq "one no-room warning" 1 "$(grep -c 'No other account has room right now.' "$NOTIFY_LOG")"
+sw_account other 0.1 0.1
+sw_check
+assert_eq "check exits cleanly" 0 "$SW_RC"
+assert_eq "the next check hands over once a candidate has room" other "$(cat "$SWAPKIN_DIR/active")"
+assert_contains "and says so" "$(cat "$NOTIFY_LOG")" "Switched to other"
+assert_eq "the no-room warning is not repeated" 1 "$(grep -c 'No other account has room right now.' "$NOTIFY_LOG")"
+assert_eq "nothing else was sent" 2 "$(sw_notes)"
+
+echo "52. a blocked or failed switch sends no 'Switched' notice but still warns once"
+sw_sandbox '{"autoSwitch":true,"alertAt":90}'
+sw_account spent 0.2 1.0
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+# The holder keeps the switch lock for both checks and signals once it has it.
+touch "$S/hold"
+( exec 9>"$SWAPKIN_DIR/.lock"; flock 9; touch "$S/held"; while [[ -e $S/hold ]]; do sleep 0.1; done ) &
+HOLD_PID=$!
+for _ in $(seq 1 100); do [[ -e $S/held ]] && break; sleep 0.05; done
+assert_true [ -e "$S/held" ]
+SWAPKIN_LOCK_WAIT=1 sw_check
+rc1=$SW_RC
+SWAPKIN_LOCK_WAIT=1 sw_check
+rm -f "$S/hold"; wait "$HOLD_PID" 2>/dev/null
+assert_eq "a busy lock is not an error for the watchdog" "0 0" "$rc1 $SW_RC"
+assert_eq "no switch while the lock is held" spent "$(cat "$SWAPKIN_DIR/active")"
+assert_eq "no notice of a switch that did not happen" 0 "$(grep -c 'Switched to' "$NOTIFY_LOG")"
+assert_eq "the spent warning is still sent, once over both checks" 1 "$(grep -c 'spent is at 100% of its week' "$NOTIFY_LOG")"
+assert_eq "the new stage is saved" 2 "$(jq -r --arg d "${SW_WEEKLY_RESET:0:10}" '.spent.weekly[$d]' "$SWAPKIN_DIR/watch.json" 2>/dev/null)"
+sw_check
+assert_eq "the next free check retries and switches" roomy "$(cat "$SWAPKIN_DIR/active")"
+assert_eq "one 'Switched' notice, for the real switch" 1 "$(grep -c 'Switched to roomy' "$NOTIFY_LOG")"
+
+sw_sandbox '{"autoSwitch":true,"alertAt":90}'
+sw_account spent 0.2 1.0
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+# A live login that cannot be read makes p_use fail on its save-back, even
+# for root, before anything is switched.
+rm "$CLAUDE_CONFIG_DIR/.credentials.json"
+mkdir "$CLAUDE_CONFIG_DIR/.credentials.json"
+sw_check
+rc1=$SW_RC
+sw_check
+assert_true [ "$rc1" -ne 0 ]
+assert_true [ "$SW_RC" -ne 0 ]
+assert_eq "a failed switch leaves the active account" spent "$(cat "$SWAPKIN_DIR/active")"
+assert_eq "a failed switch sends no 'Switched' notice" 0 "$(grep -c 'Switched to' "$NOTIFY_LOG")"
+assert_eq "the spent warning is sent once" 1 "$(grep -c 'spent is at 100% of its week' "$NOTIFY_LOG")"
+assert_eq "the failed switch is reported once, naming the target" 1 "$(grep -c 'Could not switch to roomy' "$NOTIFY_LOG")"
+rmdir "$CLAUDE_CONFIG_DIR/.credentials.json"
+jq -n --arg t "$SW_TOKEN_PREFIX-live-DDDDDDDDDDDDDDDDDDDD" \
+  '{claudeAiOauth:{refreshToken:$t, subscriptionType:"pro"}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"
+sw_check
+assert_eq "the next check retries and switches" roomy "$(cat "$SWAPKIN_DIR/active")"
+assert_eq "one 'Switched' notice, for the real switch" 1 "$(grep -c 'Switched to roomy' "$NOTIFY_LOG")"
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"
@@ -1195,7 +1485,8 @@ if grep -qF "$LIVE_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$CODEX_WS2_ROTATED" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$CODEX_WS2_RACE" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$CODEX_Q_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
-   || grep -qF "$CODEX_API_KEY" "$ALL_OUTPUT_LOG" 2>/dev/null; then
+   || grep -qF "$CODEX_API_KEY" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$SW_TOKEN_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null; then
   bad "no captured test output contains any fixture token string"
 else
   ok "no captured test output contains any fixture token string"

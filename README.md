@@ -196,10 +196,32 @@ Behaviour lives in `~/.local/share/swapkin/config.json`:
 { "alertAt": 90, "autoSwitch": false }
 ```
 
-- `alertAt` — the weekly percentage that triggers one desktop warning per window.
+- `alertAt` — the percentage that triggers one desktop warning per window, for
+  every window in `autoSwitchWindows`.
 - `autoSwitch` — off by default. Turn it on and a spent account hands over to the
   account with the most room left, with a notification saying so. Left off, you
   get the warning and decide yourself.
+- `autoSwitchWindows` — which limit windows the watchdog watches, warns about and
+  switches on: `"weekly"`, `"session"` (the 5-hour window), or both. Default
+  `["weekly"]`. Unknown items are ignored; an empty or invalid value means the
+  default.
+- `autoSwitchAt` — the percentage at which a watched window counts as spent and
+  the account hands over. Default `100`. A value outside 1–100 is clamped into
+  it; anything that is not a number is ignored.
+
+With several accounts, the 5-hour session window is usually the one that runs
+out first. To hand over as soon as it is nearly spent:
+
+```json
+{ "alertAt": 90, "autoSwitch": true, "autoSwitchWindows": ["weekly", "session"], "autoSwitchAt": 95 }
+```
+
+The account it hands over to must have room in every watched window; it is the
+one with the most room left in its tightest window. When none has room, you get
+a warning saying so and nothing switches, but every later check tries again
+while the account stays spent, so the first account to free up is taken. A
+switch that fails is reported once and retried the same way. Each warning names
+its window and fires once per threshold until that window resets.
 
 The watchdog interval and the weekly budget are widget settings:
 
@@ -220,7 +242,8 @@ after the start, the budget grows evenly all week.
 ```
 ~/.local/share/swapkin/
   active                  the account in use
-  config.json             alertAt, autoSwitch
+  config.json             alertAt, autoSwitch, autoSwitchWindows, autoSwitchAt
+  watch.json              which warnings were already sent, per window
   <account>/oauth.json    that account's login        (0600)
   <account>/account.json  its profile keys            (0600)
   <account>/meta.json     its colour
