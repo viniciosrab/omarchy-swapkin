@@ -29,9 +29,12 @@ it, so settings, sessions, skills, hooks and MCP logins are untouched.
   and, if you want it, the Claude Code status line.
 - **Limits for every account**, not only the active one: session window, weekly
   window and any model-specific window the plan has.
-- **Pace, not just a percentage.** `13% used · budget 20% · 7% under pace`,
-  `At this rate: about 64% at reset`, and the reset time. The budget grows only
-  during the days and hours you work (see below).
+- **Shows what is left.** Every limit reads 100% when nothing is spent and goes
+  down as you use it; the `percentages` setting switches back to showing what is
+  used (see [Settings](#settings)).
+- **Pace, not just a percentage.** `87% left · budget 80% · 7% under pace`,
+  `At this rate: about 36% left at reset`, and the reset time. The budget grows
+  only during the days and hours you work (see below).
 - **A watchdog while the panel is closed.** It warns once when the active
   account passes your threshold. Hand-over when an account is spent is opt-in,
   on the weekly window, the 5-hour window or both, for Claude Code and Codex
@@ -277,7 +280,8 @@ Codex notices start with `Codex:`, and a few things work differently:
   has recorded its limits. The active account is read the same way: a window
   that reset since its last session is not spent.
 
-The watchdog interval and the weekly budget are widget settings:
+The watchdog interval, the weekly budget and how percentages read are widget
+settings:
 
 ```bash
 omarchy bar set io.github.viniciosrab.swapkin watchIntervalMin 5 --json
@@ -287,6 +291,18 @@ omarchy bar set io.github.viniciosrab.swapkin watchIntervalMin 5 --json
 `budgetStartHour` (9) and `budgetEndHour` (19) shape the pace curve: only those
 hours earn weekly budget. With no working day picked, or an end hour that is not
 after the start, the budget grows evenly all week.
+
+`percentages` (`Remaining` or `Used`) sets what the panel's figures count.
+`Remaining`, the default, shows how much of each limit is left: a full meter is
+a fresh window, and the pace line reads `87% left · budget 80%`, the budget being
+what should still be left by now. `Used` shows how much is spent, as before:
+
+```bash
+omarchy bar set io.github.viniciosrab.swapkin percentages Used
+```
+
+Only the panel changes: `alertAt`, `autoSwitchAt`, the warnings, the CLI and
+`usage.json` always count what is used.
 
 `prices.json`, next to the plugin, holds the per-million-token rates used for the
 "at API prices" line. They change; edit the file rather than the code.

@@ -159,6 +159,11 @@ Panel {
     setting("budgetStartHour", Budget.DEFAULTS.startHour), setting("budgetEndHour", Budget.DEFAULTS.endHour))
   readonly property var calendarConfig: Budget.config("Every day", "", 0, 24)
 
+  // What the figures on screen count: "Remaining" (what is left of each
+  // limit) or "Used". Only the display turns around; every threshold, the
+  // pace maths and the watchdog keep working on the used share.
+  readonly property string percentMode: String(setting("percentages", "Remaining"))
+
   function paceFor(w) {
     if (!w || (w.kind !== "weekly" && w.kind !== "month")) return null
     var span = windowSpanMs(w.kind === "month" ? "month" : "week")
@@ -405,7 +410,7 @@ Panel {
 
   function peakText(a) {
     var peak = tightest(limitWindows(a))
-    return peak ? " · " + Math.round(peak.percent * 100) + "% peak" : ""
+    return peak ? " · " + Budget.peakText(peak.percent, root.percentMode) : ""
   }
 
   // One chip per provider whose paying account Swapkin knows, for the strip
@@ -1641,7 +1646,7 @@ Panel {
         Meter {
           width: parent.width - percentLabel.width - parent.spacing
           anchors.verticalCenter: parent.verticalCenter
-          value: providerRow.tight ? providerRow.tight.percent : -1
+          value: providerRow.tight ? Budget.shown(providerRow.tight.percent, root.percentMode) : -1
           alarming: !!providerRow.tight && providerRow.tight.percent >= 0.9
         }
 
@@ -1650,7 +1655,7 @@ Panel {
           textFormat: Text.PlainText
           width: Style.space(34)
           horizontalAlignment: Text.AlignRight
-          text: providerRow.tight ? Math.round(providerRow.tight.percent * 100) + "%" : ""
+          text: providerRow.tight ? Budget.percentText(providerRow.tight.percent, root.percentMode) : ""
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -1701,7 +1706,7 @@ Panel {
         id: limitValue
         textFormat: Text.PlainText
         text: limitRow.window && limitRow.window.percent >= 0
-          ? Math.round(limitRow.window.percent * 100) + "%"
+          ? Budget.percentText(limitRow.window.percent, root.percentMode)
           : "—"
         color: limitRow.alarming ? root.urgent : root.foreground
         font.family: root.fontFamily
@@ -1718,30 +1723,32 @@ Panel {
       Meter {
         id: rowMeter
         width: parent.width
-        value: limitRow.window ? limitRow.window.percent : -1
+        value: limitRow.window ? Budget.shown(limitRow.window.percent, root.percentMode) : -1
         alarming: limitRow.alarming
       }
 
-      // Where the budget says you should be by now.
+      // Where the budget says you should be by now: in Remaining, how much
+      // should still be left.
       Rectangle {
         visible: !!limitRow.pace && limitRow.pace.state !== "early"
         width: 2
         height: rowMeter.implicitHeight + Style.space(6)
         color: root.urgent
-        x: limitRow.pace ? Math.round((parent.width - width) * root.clamp(limitRow.pace.budget, 0, 1)) : 0
+        x: limitRow.pace ? Math.round((parent.width - width)
+             * root.clamp(Budget.shown(limitRow.pace.budget, root.percentMode), 0, 1)) : 0
         anchors.verticalCenter: rowMeter.verticalCenter
       }
     }
 
     CaptionText {
       visible: !!limitRow.pace
-      text: limitRow.window ? Budget.paceLine(limitRow.window.percent, limitRow.pace) : ""
+      text: limitRow.window ? Budget.paceLine(limitRow.window.percent, limitRow.pace, root.percentMode) : ""
       color: limitRow.pace && limitRow.pace.state === "over" ? root.foreground : root.dim
     }
 
     CaptionText {
       text: limitRow.window ? Budget.forecastLine(limitRow.window.percent, limitRow.pace,
-                                                  limitRow.resetMs, root.nowMs) : ""
+                                                  limitRow.resetMs, root.nowMs, root.percentMode) : ""
       color: limitRow.pace && (limitRow.pace.full || limitRow.pace.projected > 1) ? root.urgent : root.dim
     }
 
@@ -1759,7 +1766,9 @@ Panel {
     font.pixelSize: Style.font.caption
   }
 
-  // Rounded track showing the percentage of the allowance used.
+  // Rounded track showing a share of the allowance: what is left or what is
+  // used, whichever the caller hands it. Alarm colours come from the caller,
+  // always worked out on the used share.
   component Meter: Item {
     id: meter
     property real value: -1

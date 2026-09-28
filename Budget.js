@@ -156,24 +156,56 @@ function durationText(ms) {
 
 function pct(x) { return Math.round(x * 100) + "%" }
 
+// The "percentages" setting: "Remaining" shows how much of a limit is left,
+// "Used" (and anything unset) how much is spent. Every figure underneath is
+// still the used share; only what the panel prints turns around.
+function remaining(mode) {
+  return String(mode === undefined || mode === null ? "" : mode).toLowerCase().indexOf("remain") === 0
+}
+
+// The share a meter or a label shows. Left never drops below nothing; an
+// unknown figure (negative) passes through untouched.
+function shown(used, mode) {
+  if (!remaining(mode) || !(used >= 0)) return used
+  return Math.max(0, 1 - used)
+}
+
+// Left is rounded off the used side, so the two modes always add up to 100.
+function leftPct(x) { return Math.max(0, 100 - Math.round(x * 100)) + "%" }
+
+function percentText(used, mode) {
+  return remaining(mode) ? leftPct(used) : pct(used)
+}
+
+// An account card's figure for its tightest window: "12% peak" or "88% left".
+function peakText(used, mode) {
+  return remaining(mode) ? leftPct(used) + " left" : pct(used) + " peak"
+}
+
 // "12% used · budget 17% · 5% under pace", the line that says whether to switch.
-function paceLine(used, p) {
-  var head = pct(used) + " used"
+// Remaining turns both figures around ("88% left · budget 83%", the share that
+// should still be left); the verdict is about speed and reads the same.
+function paceLine(used, p, mode) {
+  var left = remaining(mode)
+  var head = left ? leftPct(used) + " left" : pct(used) + " used"
   if (!p) return head
   var verdict = p.state === "early" ? "too early to judge"
     : p.state === "on" ? "on pace"
     : pct(Math.abs(p.diff)) + (p.state === "under" ? " under pace" : " over pace")
-  return head + " · budget " + pct(p.budget) + " · " + verdict
+  return head + " · budget " + (left ? leftPct(p.budget) : pct(p.budget)) + " · " + verdict
 }
 
 // The forecast sentence; empty when there is nothing honest to say.
-function forecastLine(used, p, resetMs, nowMs) {
+function forecastLine(used, p, resetMs, nowMs, mode) {
   if (!p) return ""
+  var left = remaining(mode)
   if (p.full) return "Empty now · back at " + whenText(resetMs, nowMs)
   if (p.projected < 0) return ""
-  if (p.projected <= 1) return "At this rate: about " + pct(p.projected) + " at reset"
-  if (p.emptyAtMs < 0) return "At this rate: full before the reset"
-  return "At this rate: full " + whenText(p.emptyAtMs, nowMs) + " · " + durationText(resetMs - p.emptyAtMs) + " before the reset"
+  if (p.projected <= 1)
+    return "At this rate: about " + (left ? leftPct(p.projected) + " left" : pct(p.projected)) + " at reset"
+  var runsOut = left ? "runs out" : "full"
+  if (p.emptyAtMs < 0) return "At this rate: " + runsOut + " before the reset"
+  return "At this rate: " + runsOut + " " + whenText(p.emptyAtMs, nowMs) + " · " + durationText(resetMs - p.emptyAtMs) + " before the reset"
 }
 
 function resetLine(resetMs, nowMs) {
@@ -184,5 +216,5 @@ function resetLine(resetMs, nowMs) {
 if (typeof module !== "undefined") module.exports = {
   config: config, defaultConfig: defaultConfig, DEFAULTS: DEFAULTS, segments: segments, workMs: workMs, walk: walk,
   pace: pace, whenText: whenText, paceLine: paceLine, forecastLine: forecastLine, resetLine: resetLine,
-  durationText: durationText
+  durationText: durationText, remaining: remaining, shown: shown, percentText: percentText, peakText: peakText
 }
