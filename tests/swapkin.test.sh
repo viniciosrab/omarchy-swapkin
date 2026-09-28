@@ -1781,6 +1781,86 @@ echo spent > "$SWAPKIN_DIR/active"
 sw_check
 assert_eq "Claude still skips an account with no figures" spent "$(cat "$SWAPKIN_DIR/active")"
 
+# A codex stub that logs every call and fails `app-server daemon restart` when
+# $RESTART_FAILS exists, and a pgrep stub that reports the managed daemon only
+# while $DAEMON_UP exists (plus one app-server and one TUI for pgrep -ax).
+cx_daemon_stubs() {
+  CODEX_CALLS="$S/codex-calls"; DAEMON_UP="$S/daemon-up"; RESTART_FAILS="$S/restart-fails"
+  : > "$CODEX_CALLS"
+  mk_stub codex "
+echo \"\$*\" >> '$CODEX_CALLS'
+case \"\$*\" in
+  'app-server daemon restart') [ -e '$RESTART_FAILS' ] && exit 1; exit 0 ;;
+esac
+exit 0
+"
+  mk_stub pgrep "
+case \"\$*\" in
+  *managed-daemon*) [ -e '$DAEMON_UP' ] && echo 777 && exit 0; exit 1 ;;
+  '-ax codex') printf '777 codex app-server --listen unix:// --managed-daemon\n888 codex\n' ;;
+  *) exit 1 ;;
+esac
+"
+}
+restarts() { grep -c '^app-server daemon restart$' "$CODEX_CALLS" 2>/dev/null || true; }
+
+echo "63. a Codex switch in place restarts the running managed daemon"
+cx_sandbox "{$CX_BOTH}"
+S=$(dirname "$SWAPKIN_DIR")
+cx_daemon_stubs
+cx_account work user-A acct-A
+cx_account codex02 user-C acct-C
+cx_live work
+touch "$DAEMON_UP"
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "the switch exits 0" 0 "$rc"
+assert_eq "the live login is codex02's" user-C "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "the daemon is restarted once" 1 "$(restarts)"
+assert_contains "and the user is told so" "$out" "Restarted the Codex daemon"
+assert_contains "with how to get interrupted work back" "$out" "codex resume"
+assert_contains "the session count leaves the daemon out" "$out" "1 running Codex session"
+
+rm -f "$DAEMON_UP"; : > "$CODEX_CALLS"
+sk_rc "$SWAPKIN" -p codex use work
+assert_eq "no daemon running: still switches" user-A "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "no daemon running: nothing to restart" 0 "$(restarts)"
+
+touch "$DAEMON_UP" "$RESTART_FAILS"; : > "$CODEX_CALLS"
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "a failed restart keeps the switch" 0 "$rc"
+assert_eq "the live login stays codex02's" user-C "$(codex_user_of "$LIVE_AUTH")"
+assert_contains "and says how to restart by hand" "$out" "codex app-server daemon restart"
+rm -f "$RESTART_FAILS"
+
+echo '{"codexDaemonRestart":false}' > "$SWAPKIN_DIR/config.json"; : > "$CODEX_CALLS"
+sk_rc "$SWAPKIN" -p codex use work
+assert_eq "codexDaemonRestart false: no restart" 0 "$(restarts)"
+assert_contains "and the manual command is shown" "$out" "codex app-server daemon restart"
+echo '{}' > "$SWAPKIN_DIR/config.json"
+
+fake_codex_auth "$LIVE_AUTH" user-Q acct-Q plus "$CODEX_Q_TOKEN"; : > "$CODEX_CALLS"
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_true [ "$rc" -ne 0 ]
+assert_eq "a refused switch restarts nothing" 0 "$(restarts)"
+
+rm -f "$LIVE_AUTH"; : > "$CODEX_CALLS"
+sk_rc "$SWAPKIN" -p codex use work
+assert_eq "a pointer-only switch restarts nothing" 0 "$(restarts)"
+
+echo "64. the watchdog's Codex hand-over restarts the daemon and says so"
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+S=$(dirname "$SWAPKIN_DIR")
+cx_daemon_stubs
+cx_account work user-A acct-A
+cx_account codex02 user-C acct-C
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+touch "$DAEMON_UP"
+cx_check
+assert_eq "hands over to codex02" codex02 "$(cat "$CX/active")"
+assert_eq "the daemon is restarted once" 1 "$(restarts)"
+assert_contains "the notice mentions the restart" "$(cat "$NOTIFY_LOG")" "Restarted the Codex daemon"
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"
