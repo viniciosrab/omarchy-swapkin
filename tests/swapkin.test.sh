@@ -55,6 +55,11 @@ sandbox() {
   echo "$dir"
 }
 
+# Notifications follow the system language, so the suite pins it: English,
+# from no /etc/locale.conf. Tests that need another language set it per call.
+unset LC_ALL LC_MESSAGES SWAPKIN_LANG
+export LANG=C.UTF-8 SWAPKIN_LOCALE_CONF=/nonexistent/locale.conf
+
 # ============================================================ 1. claude use ==
 echo "1. claude use saves the live login back before switching"
 S=$(sandbox)
@@ -1956,6 +1961,140 @@ list_out=$(sk "$SWAPKIN" -p claude list --json)
 assert_eq "list --json has a null email when there is none" null \
   "$(jq -r '.[] | select(.name == "bare") | .email' <<<"$list_out" 2>/dev/null)"
 assert_not_contains "list --json never carries a refresh token" "$list_out" "$EMAIL_TOKEN"
+
+echo "67. notifications follow the system language: Portuguese for pt, English otherwise"
+PT=pt_BR.UTF-8
+# The note line for an account's switch/warning, from the notify-send stub.
+sw_pt_switch() { # env-assignments... : a spent weekly window hands over to roomy
+  sw_sandbox '{"autoSwitch":true,"alertAt":90}'
+  sw_account spent 0.2 1.0
+  sw_account roomy 0.1 0.1
+  echo spent > "$SWAPKIN_DIR/active"
+  env "$@" "$SWAPKIN" check >/dev/null 2>&1
+}
+sw_pt_switch LANG=$PT
+assert_eq "pt: the switch notice" \
+  "Trocado para roomy | spent esgotou a cota semanal. Sessões abertas passam a usar a nova conta na próxima mensagem." \
+  "$(cat "$NOTIFY_LOG")"
+sw_pt_switch LANG=en_US.UTF-8
+assert_eq "en: the switch notice is unchanged" \
+  "Switched to roomy | spent ran out of weekly quota. Open sessions follow on their next message." "$(cat "$NOTIFY_LOG")"
+sw_pt_switch LANG=C
+assert_contains "C: English" "$(cat "$NOTIFY_LOG")" "Switched to roomy"
+sw_pt_switch LANG=$PT LC_ALL=en_US.UTF-8
+assert_contains "LC_ALL wins over LANG" "$(cat "$NOTIFY_LOG")" "Switched to roomy"
+sw_pt_switch LANG=C LC_ALL=$PT
+assert_contains "LC_ALL pt wins over LANG C" "$(cat "$NOTIFY_LOG")" "Trocado para roomy"
+sw_pt_switch LANG=en_US.UTF-8 LC_MESSAGES=$PT
+assert_contains "LC_MESSAGES wins over LANG" "$(cat "$NOTIFY_LOG")" "Trocado para roomy"
+sw_pt_switch LANG=$PT LC_MESSAGES=en_US.UTF-8
+assert_contains "LC_MESSAGES en wins over LANG pt" "$(cat "$NOTIFY_LOG")" "Switched to roomy"
+sw_pt_switch LANG=C SWAPKIN_LANG=pt
+assert_contains "SWAPKIN_LANG overrides the locale" "$(cat "$NOTIFY_LOG")" "Trocado para roomy"
+# A service may run with no locale at all: /etc/locale.conf decides then.
+printf 'LANG="pt_BR.UTF-8"\n' > "$S/locale.conf"
+sw_pt_switch -u LANG SWAPKIN_LOCALE_CONF="$S/locale.conf"
+assert_contains "no locale in the environment: locale.conf's LANG" "$(cat "$NOTIFY_LOG")" "Trocado para roomy"
+printf 'LANG=en_US.UTF-8\nLC_MESSAGES=pt_BR.UTF-8\n' > "$S/locale.conf"
+sw_pt_switch -u LANG SWAPKIN_LOCALE_CONF="$S/locale.conf"
+assert_contains "locale.conf's LC_MESSAGES wins over its LANG" "$(cat "$NOTIFY_LOG")" "Trocado para roomy"
+sw_pt_switch -u LANG SWAPKIN_LOCALE_CONF="$S/missing.conf"
+assert_contains "no locale anywhere: English" "$(cat "$NOTIFY_LOG")" "Switched to roomy"
+
+sw_sandbox '{"autoSwitch":false,"alertAt":90}'
+sw_account spent 0.2 0.95
+sw_account roomy 0.1 0.4
+echo spent > "$SWAPKIN_DIR/active"
+LANG=$PT sw_check
+assert_eq "pt: the warning with room elsewhere" \
+  "spent está em 95% da semana | roomy tem 60% livre. Troque pela barra ou aperte a no painel." "$(cat "$NOTIFY_LOG")"
+
+sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["weekly","session"]}'
+sw_account spent 0.92 0.2
+sw_account other 1.0 1.0
+echo spent > "$SWAPKIN_DIR/active"
+LANG=$PT sw_check
+assert_eq "pt: the session warning with no room" \
+  "spent está em 92% da janela de 5 horas | Nenhuma outra conta tem espaço agora." "$(cat "$NOTIFY_LOG")"
+
+sw_sandbox '{"autoSwitch":true,"alertAt":90,"autoSwitchWindows":["weekly","session"]}'
+sw_account spent 1.0 1.0
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+LANG=$PT sw_check
+assert_contains "pt: both spent windows are joined with 'e'" "$(cat "$NOTIFY_LOG")" \
+  "spent esgotou a cota semanal e atingiu o limite de 5 horas."
+
+sw_sandbox '{"autoSwitch":true,"alertAt":90}'
+sw_account spent 0.2 1.0
+sw_account roomy 0.1 0.1
+echo spent > "$SWAPKIN_DIR/active"
+rm "$CLAUDE_CONFIG_DIR/.credentials.json"
+mkdir "$CLAUDE_CONFIG_DIR/.credentials.json"
+LANG=$PT sw_check
+assert_contains "pt: the failed switch" "$(cat "$NOTIFY_LOG")" \
+  "Não foi possível trocar para roomy | spent continua ativa; a próxima verificação tenta de novo. Troque pela barra ou aperte a no painel."
+
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 10 3600 10 $((3 * DAY)) 60
+LANG=$PT cx_check
+assert_eq "pt: the Codex switch notice keeps the Codex prefix" \
+  "Codex: trocado para codex02 | work atingiu o limite de 5 horas. Sessões do Codex em execução continuam com work até serem reiniciadas." \
+  "$(cat "$NOTIFY_LOG")"
+
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_live work
+mkdir -p "$CX/codex02/home"
+cp "$CX/codex02/auth.json" "$CX/codex02/home/auth.json"
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+cx_rollout user-B acct-B 10 3600 10 $((3 * DAY)) 60
+rm "$LIVE_AUTH"
+LANG=$PT cx_check
+assert_contains "pt: a switch that could not go in place says how to start sessions" "$(cat "$NOTIFY_LOG")" \
+  "Não foi possível trocar o login em uso; inicie novas sessões com swapkin run codex."
+
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+S=$(dirname "$SWAPKIN_DIR")
+cx_daemon_stubs
+cx_account work user-A acct-A
+cx_account codex02 user-C acct-C
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+touch "$DAEMON_UP"
+LANG=$PT cx_check
+assert_contains "pt: the daemon restart" "$(cat "$NOTIFY_LOG")" \
+  "O daemon do Codex foi reiniciado; codex resume traz de volta o que ele estava executando."
+
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+S=$(dirname "$SWAPKIN_DIR")
+cx_daemon_stubs
+cx_account work user-A acct-A
+cx_account codex02 user-C acct-C
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+touch "$DAEMON_UP" "$RESTART_FAILS"
+LANG=$PT cx_check
+assert_contains "pt: a daemon that kept the old account" "$(cat "$NOTIFY_LOG")" \
+  "O daemon do Codex ainda está com work; execute: codex app-server daemon restart."
+cx_sandbox "{$CX_BOTH,\"autoSwitchProviders\":[\"codex\"]}"
+S=$(dirname "$SWAPKIN_DIR")
+cx_daemon_stubs
+cx_account work user-A acct-A
+cx_account codex02 user-C acct-C
+cx_live work
+cx_rollout user-A acct-A 100 3600 20 $((3 * DAY)) 60
+touch "$DAEMON_UP" "$RESTART_FAILS"
+cx_check
+assert_contains "en: the daemon hint is unchanged" "$(cat "$NOTIFY_LOG")" \
+  "The Codex daemon still has work; run: codex app-server daemon restart."
+assert_contains "en: the CLI daemon hint is unchanged" "$(LANG=$PT sk "$SWAPKIN" -p codex use work)" \
+  "run: codex app-server daemon restart"
 
 # ================================================================== summary ==
 echo
