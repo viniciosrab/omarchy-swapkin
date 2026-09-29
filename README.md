@@ -254,6 +254,11 @@ while the account stays spent, so the first account to free up is taken. A
 switch that fails is reported once and retried the same way. Each warning names
 its window and fires once per threshold until that window resets.
 
+Warnings and hand-over notices follow the system language: Portuguese (Brazil)
+when the messages locale (`LC_ALL`, then `LC_MESSAGES`, then `LANG`, or
+`/etc/locale.conf` when none is set) starts with `pt`, English otherwise.
+`SWAPKIN_LANG=pt` or `SWAPKIN_LANG=en` overrides it.
+
 To let Codex hand over too:
 
 ```json

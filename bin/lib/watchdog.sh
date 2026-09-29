@@ -14,8 +14,12 @@
 #     account with known room wins over it;
 #   - p_watch_switched <from> <reason> <to>, when defined: the body of the
 #     "switched" notice. Without it, open sessions follow on their next message.
-# Notices from any provider but Claude are prefixed with its name.
+# Notices from any provider but Claude are prefixed with its name, and follow
+# the system language (see i18n.sh).
 # State (which warnings were sent) lives in that provider's own watch.json.
+
+# shellcheck source=bin/lib/i18n.sh
+source "${BASH_SOURCE[0]%/*}/i18n.sh"
 
 CONFIG="$ACCOUNTS/config.json"
 ICONS="$REPO_ROOT/icons"
@@ -224,9 +228,8 @@ usable_candidate() { # account windows...
   (( age <= 7200 ))
 }
 
-# How a notification names each window.
-window_span() { case $1 in weekly) echo "its week" ;; session) echo "its 5-hour window" ;; esac; }
-window_spent() { case $1 in weekly) echo "ran out of weekly quota" ;; session) echo "hit its 5-hour limit" ;; esac; }
+# How a notification words a spent window; its strings live in i18n.sh.
+window_spent() { msg "spent_$1"; }
 
 # One pass of the watchdog for the loaded provider: refresh the figures, warn
 # once per threshold per window, and hand over to another account when this
@@ -300,12 +303,12 @@ watch_check() {
   if [[ $switched == true ]]; then
     local reason="" i
     for i in "${!spent[@]}"; do
-      (( i )) && reason+=" and "
+      (( i )) && reason+=$(msg and)
       reason+=$(window_spent "${spent[$i]}")
     done
-    local body="$cur $reason. Open sessions follow on their next message."
+    local body; body=$(msg switched_body "$cur" "$reason")
     declare -F p_watch_switched >/dev/null && body=$(p_watch_switched "$cur" "$reason" "$other")
-    notify "Switched to $other" "$body" "$other"
+    notify "$(msg switched "$other")" "$body" "$other"
   else
     # A switch that did not happen still owes the warnings due, and a spent
     # account keeps retrying on later checks whatever stage is saved.
@@ -314,9 +317,9 @@ watch_check() {
     for i in "${!news[@]}"; do
       pretty=$(awk -v p="${news_pct[$i]}" 'BEGIN{printf "%d", p * 100}')
       if [[ -n $other ]]; then
-        notify "$cur is at ${pretty}% of $(window_span "${news[$i]}")" "$other has ${free}% free. Switch from the bar, or press a in the panel." "$cur"
+        notify "$(msg "warn_${news[$i]}" "$cur" "$pretty")" "$(msg warn_room "$other" "$free")" "$cur"
       else
-        notify "$cur is at ${pretty}% of $(window_span "${news[$i]}")" "No other account has room right now." "$cur"
+        notify "$(msg "warn_${news[$i]}" "$cur" "$pretty")" "$(msg warn_no_room)" "$cur"
       fi
     done
     # A failed switch is told once per reset of the spent windows (stage 3).
@@ -327,7 +330,7 @@ watch_check() {
         told=true
         update=$(jq -c --arg w "${spent[$i]}" --arg k "${spent_key[$i]}" '. + {($w): {($k): 3}}' <<<"$update")
       done
-      [[ $told == true ]] && notify "Could not switch to $other" "$cur is still active; the next check tries again. Switch from the bar, or press a in the panel." "$cur"
+      [[ $told == true ]] && notify "$(msg failed "$other")" "$(msg failed_body "$cur")" "$cur"
     fi
   fi
 

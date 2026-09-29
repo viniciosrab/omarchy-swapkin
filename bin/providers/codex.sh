@@ -313,7 +313,8 @@ p_use() { # name
 # are interrupted; `codex resume` brings them back. The outcome is left in
 # DAEMON_OUTCOME for the watchdog's notice, which runs in another shell.
 DAEMON_OUTCOME="$(provider_root codex)/.daemon_restart"
-DAEMON_HINT="run: codex app-server daemon restart"
+DAEMON_CMD="codex app-server daemon restart"
+DAEMON_HINT="run: $DAEMON_CMD"
 
 # codexDaemonRestart, default true. Read with has(): jq's `//` would turn an
 # explicit false into the default. A missing or broken config means the default.
@@ -533,14 +534,14 @@ p_watch_fresh() { return 0; } # account windows...
 # go in place (no live auth.json, or an API-key login), only sessions started
 # through swapkin follow.
 p_watch_switched() { # from reason to
-  local body="$1 $2. Running Codex sessions keep $1 until they are restarted."
+  local body; body=$(msg codex_switched "$1" "$2" "$1")
   local want; want=$(codex_identity "$(store_of "$3")")
   if [[ -z $want || ! -f $(live_auth) || $(codex_identity "$(live_auth)") != "$want" ]]; then
-    body+=" The switch could not go in place, so start new sessions with swapkin run codex."
+    body+=" $(msg codex_not_in_place)"
   fi
   case $(cat "$DAEMON_OUTCOME" 2>/dev/null) in
-    restarted) body+=" Restarted the Codex daemon; codex resume brings back what it was running." ;;
-    failed|disabled) body+=" The Codex daemon still has $1; $DAEMON_HINT." ;;
+    restarted) body+=" $(msg codex_restarted)" ;;
+    failed|disabled) body+=" $(msg codex_daemon_kept "$1" "$DAEMON_CMD")" ;;
   esac
   printf '%s\n' "$body"
 }
