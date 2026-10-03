@@ -236,7 +236,7 @@ use_pointer_only() { # name reason
 # A switch moves Pi's own ChatGPT login along with Codex's; see pi_sync.
 p_use() { # name
   local from; from=$(active)
-  codex_switch "$1"
+  codex_switch "$1" || return
   pi_sync "$from" "$1" || true
 }
 
