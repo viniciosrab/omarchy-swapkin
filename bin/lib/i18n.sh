@@ -60,6 +60,8 @@ msg() { # id args...
                       pt='O daemon do Codex foi reiniciado; codex resume traz de volta o que ele estava executando.' ;;
     codex_daemon_kept) en='The Codex daemon still has %s; run: %s.'
                       pt='O daemon do Codex ainda está com %s; execute: %s.' ;;
+    pi_login_hint)    en='Pi has no saved ChatGPT login for %s yet, so it keeps its current one. Run /login in Pi now; it is saved for this account on the next switch.'
+                      pt='O Pi ainda não tem um login do ChatGPT salvo para %s, então continua com o atual. Execute /login no Pi agora; ele é salvo para esta conta na próxima troca.' ;;
     *) printf '%s' "$id"; return ;;
   esac
   # shellcheck disable=SC2059 # the templates above are the format strings

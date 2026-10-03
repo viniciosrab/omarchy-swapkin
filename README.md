@@ -120,6 +120,17 @@ Each one switches a different way:
   bring them back with `codex resume`. Set `"codexDaemonRestart": false` to
   restart it yourself instead. The ChatGPT desktop app runs its own Codex
   server, which keeps the old account until you restart the app.
+
+  Pi (the `pi` coding agent) follows the switch too. Pi keeps
+  its own "Sign in with ChatGPT" login (the `openai` entry in
+  `~/.pi/agent/auth.json`, or `$PI_CODING_AGENT_DIR/auth.json`), separate from
+  Codex's, so each account keeps its own Pi login next to its Codex one. On a
+  switch Swapkin saves Pi's current login as the outgoing account's and puts
+  the incoming account's saved one in its place, leaving every other entry
+  alone; Pi sessions already running pick it up. An account with no saved Pi
+  login leaves Pi as it is: run `/login` in Pi while on that account, and the
+  next switch saves it. Without Pi, or without a Pi ChatGPT login, nothing
+  changes.
 - **Copilot CLI — new sessions.** Copilot has no login file of its own; it
   rides on `gh`'s account. Switching runs `gh auth switch`, so new Copilot CLI
   sessions (and anything else that asks `gh` who's signed in, including `git

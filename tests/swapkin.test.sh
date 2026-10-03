@@ -57,7 +57,7 @@ sandbox() {
 
 # Notifications follow the system language, so the suite pins it: English,
 # from no /etc/locale.conf. Tests that need another language set it per call.
-unset LC_ALL LC_MESSAGES SWAPKIN_LANG
+unset LC_ALL LC_MESSAGES SWAPKIN_LANG PI_CODING_AGENT_DIR
 export LANG=C.UTF-8 SWAPKIN_LOCALE_CONF=/nonexistent/locale.conf
 
 # ============================================================ 1. claude use ==
@@ -2096,6 +2096,106 @@ assert_contains "en: the daemon hint is unchanged" "$(cat "$NOTIFY_LOG")" \
 assert_contains "en: the CLI daemon hint is unchanged" "$(LANG=$PT sk "$SWAPKIN" -p codex use work)" \
   "run: codex app-server daemon restart"
 
+echo "68. a Codex switch carries Pi's ChatGPT login along"
+# Pi keeps its own ChatGPT sign-in in ~/.pi/agent/auth.json under "openai".
+# Fixture refresh tokens start with PI_TOKEN_PREFIX; section 19 checks none
+# of them reaches captured output.
+PI_TOKEN_PREFIX="pi-fixture-refresh-token"
+pi_entry() { # account-id tag
+  local claims; claims=$(jq -cn --arg a "$1" '{"https://api.openai.com/auth":{chatgpt_account_id:$a}}')
+  jq -cn --arg acc "$(b64url '{"alg":"none"}').$(b64url "$claims").sig" --arg a "$1" \
+    --arg r "$PI_TOKEN_PREFIX-$2-RRRRRRRRRRRRRRRRRRRR" \
+    '{type:"oauth", access:$acc, refresh:$r, expires:1790000000000, accountId:$a}'
+}
+pi_refresh() { jq -r '.openai.refresh // .refresh // empty' "$1" 2>/dev/null; }
+cx_sandbox '{}'
+cx_daemon_stubs
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_account codex03 user-C acct-C
+cx_live work
+PI_AUTH="$HOME/.pi/agent/auth.json"
+mkdir -p "$HOME/.pi/agent"
+jq -n --argjson o "$(pi_entry acct-A work-live)" \
+  '{anthropic:{type:"api_key", key:"not-a-secret"}, openai:$o, "openai-codex":{type:"oauth", note:"other"}}' > "$PI_AUTH"
+chmod 644 "$PI_AUTH"
+others_before=$(jq -c 'del(.openai)' "$PI_AUTH")
+pi_entry acct-B codex02-saved > "$CX/codex02/pi-auth.json"; chmod 600 "$CX/codex02/pi-auth.json"
+
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "68a: use codex02 exits 0" 0 "$rc"
+assert_eq "68a: Codex itself switched" user-B "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "68a: Pi's openai entry is codex02's saved one" "$PI_TOKEN_PREFIX-codex02-saved-RRRRRRRRRRRRRRRRRRRR" "$(pi_refresh "$PI_AUTH")"
+assert_eq "68a: every other key in Pi's auth.json is kept" "$others_before" "$(jq -c 'del(.openai)' "$PI_AUTH")"
+assert_eq "68a: work's previous Pi login was captured" "$PI_TOKEN_PREFIX-work-live-RRRRRRRRRRRRRRRRRRRR" "$(pi_refresh "$CX/work/pi-auth.json")"
+assert_eq "68a: the captured login is mode 600" 600 "$(stat -c %a "$CX/work/pi-auth.json")"
+assert_eq "68a: Pi's auth.json is mode 600" 600 "$(stat -c %a "$PI_AUTH")"
+assert_eq "68a: no temp file or lock is left in Pi's dir" "auth.json" "$(ls -A "$HOME/.pi/agent" | tr '\n' ' ' | sed 's/ $//')"
+assert_contains "68a: use says Pi follows" "$out" "Pi"
+
+echo "68b. an account with no saved Pi login leaves Pi alone and says how to save one"
+pi_before=$(sum_of "$PI_AUTH")
+sk_rc "$SWAPKIN" -p codex use codex03
+assert_eq "68b: use codex03 exits 0" 0 "$rc"
+assert_eq "68b: Codex itself switched" user-C "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "68b: Pi's auth.json is byte-identical" "$pi_before" "$(sum_of "$PI_AUTH")"
+assert_contains "68b: the hint says to sign in to Pi" "$out" "/login"
+assert_eq "68b: codex02's Pi login was captured on the way out" "$PI_TOKEN_PREFIX-codex02-saved-RRRRRRRRRRRRRRRRRRRR" "$(pi_refresh "$CX/codex02/pi-auth.json")"
+pt_hint=$(LANG=pt_BR.UTF-8 bash -c 'source "$1"; msg pi_login_hint codex03' _ "$ROOT/bin/lib/i18n.sh")
+assert_contains "68b: the hint has a Portuguese text" "$pt_hint" "/login"
+
+echo "68c. a Pi login from another workspace is never saved as the outgoing account's"
+# Pi still holds codex02's login (acct-B) while codex03 (acct-C) is active.
+sk_rc "$SWAPKIN" -p codex use work
+assert_eq "68c: use work exits 0" 0 "$rc"
+assert_true [ ! -e "$CX/codex03/pi-auth.json" ]
+assert_eq "68c: Pi now holds work's saved login" "$PI_TOKEN_PREFIX-work-live-RRRRRRRRRRRRRRRRRRRR" "$(pi_refresh "$PI_AUTH")"
+assert_eq "68c: other keys are still kept" "$others_before" "$(jq -c 'del(.openai)' "$PI_AUTH")"
+
+echo "68d. a Pi lock held by Pi itself leaves Pi alone; the Codex switch still succeeds"
+mkdir "$PI_AUTH.lock"
+pi_before=$(sum_of "$PI_AUTH")
+sk_rc "$SWAPKIN" -p codex use codex02
+rmdir "$PI_AUTH.lock"
+assert_eq "68d: use codex02 exits 0" 0 "$rc"
+assert_eq "68d: Codex itself switched" user-B "$(codex_user_of "$LIVE_AUTH")"
+assert_eq "68d: Pi's auth.json is untouched while locked" "$pi_before" "$(sum_of "$PI_AUTH")"
+
+echo "68e. PI_CODING_AGENT_DIR is the Pi dir when set"
+ALT_PI="$S/alt-pi"
+mkdir -p "$ALT_PI"
+jq -n --argjson o "$(pi_entry acct-B alt-live)" '{openai:$o}' > "$ALT_PI/auth.json"
+pi_home_before=$(sum_of "$PI_AUTH")
+PI_CODING_AGENT_DIR="$ALT_PI" sk_rc "$SWAPKIN" -p codex use work
+assert_eq "68e: use work exits 0" 0 "$rc"
+assert_eq "68e: the override's openai entry is work's" "$PI_TOKEN_PREFIX-work-live-RRRRRRRRRRRRRRRRRRRR" "$(pi_refresh "$ALT_PI/auth.json")"
+assert_eq "68e: codex02 captured the override's login" "$PI_TOKEN_PREFIX-alt-live-RRRRRRRRRRRRRRRRRRRR" "$(pi_refresh "$CX/codex02/pi-auth.json")"
+assert_eq "68e: ~/.pi is untouched" "$pi_home_before" "$(sum_of "$PI_AUTH")"
+
+echo "68f. without Pi the switch is exactly as before"
+cx_sandbox '{}'
+cx_daemon_stubs
+cx_account work user-A acct-A
+cx_account codex02 user-B acct-B
+cx_live work
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "68f: use codex02 exits 0" 0 "$rc"
+assert_eq "68f: Codex itself switched" user-B "$(codex_user_of "$LIVE_AUTH")"
+assert_true [ ! -e "$HOME/.pi" ]
+assert_true [ ! -e "$CX/work/pi-auth.json" ]
+assert_not_contains "68f: no Pi hint without Pi" "$out" "/login"
+mkdir -p "$HOME/.pi/agent"; echo '{"anthropic":{"type":"api_key","key":"x"}}' > "$HOME/.pi/agent/auth.json"
+pi_before=$(sum_of "$HOME/.pi/agent/auth.json")
+sk_rc "$SWAPKIN" -p codex use work
+assert_eq "68f: use work exits 0 with no openai entry in Pi" 0 "$rc"
+assert_eq "68f: a Pi file without openai is untouched" "$pi_before" "$(sum_of "$HOME/.pi/agent/auth.json")"
+assert_not_contains "68f: no Pi hint without a Pi ChatGPT login" "$out" "/login"
+echo '{broken' > "$HOME/.pi/agent/auth.json"
+pi_before=$(sum_of "$HOME/.pi/agent/auth.json")
+sk_rc "$SWAPKIN" -p codex use codex02
+assert_eq "68f: use codex02 exits 0 with a broken Pi file" 0 "$rc"
+assert_eq "68f: a broken Pi file is untouched" "$pi_before" "$(sum_of "$HOME/.pi/agent/auth.json")"
+
 # ================================================================== summary ==
 echo
 echo "19. no captured test output contains a fixture token string"
@@ -2119,7 +2219,8 @@ if grep -qF "$LIVE_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$SW_TOKEN_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$CX_SW_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null \
    || grep -qF "$EMAIL_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
-   || grep -qF "$CODEX_EMAIL_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null; then
+   || grep -qF "$CODEX_EMAIL_TOKEN" "$ALL_OUTPUT_LOG" 2>/dev/null \
+   || grep -qF "$PI_TOKEN_PREFIX" "$ALL_OUTPUT_LOG" 2>/dev/null; then
   bad "no captured test output contains any fixture token string"
 else
   ok "no captured test output contains any fixture token string"
