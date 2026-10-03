@@ -15,7 +15,7 @@ P_CMD=codex
 P_MARKER=codex.json
 P_STORE='$CODEX_HOME/auth.json'
 P_HOMEVAR=CODEX_HOME
-P_HOW="New Codex sessions and bar usage monitors use the switched account. Codex sessions already running keep the old one; restart them to switch."
+P_HOW="New Codex sessions and bar usage monitors use the switched account. Codex sessions already running keep the old one; restart them to switch. Pi's ChatGPT login follows too, once it is saved for that account."
 P_ADD_HINT="The first account is whatever CODEX_HOME is already signed into."
 
 p_installed() { [[ -n $(tool_bin codex) ]]; }
@@ -233,7 +233,14 @@ use_pointer_only() { # name reason
   echo "$2"
 }
 
+# A switch moves Pi's own ChatGPT login along with Codex's; see pi_sync.
 p_use() { # name
+  local from; from=$(active)
+  codex_switch "$1"
+  pi_sync "$from" "$1" || true
+}
+
+codex_switch() { # name
   local name="$1" dir; dir=$(account_dir "$name")
   # Every switch starts with no daemon outcome, so the watchdog's notice never
   # reports a restart from an earlier switch.
@@ -304,6 +311,96 @@ p_use() { # name
     echo "$running running Codex session(s) keep the previous account until you restart them."
   fi
   restart_daemon "$name"
+}
+
+# --- Pi (the `pi` coding agent) follows the switch ---
+# shellcheck source=bin/lib/i18n.sh
+declare -F msg >/dev/null || source "${BASH_SOURCE[0]%/*}/../lib/i18n.sh"
+# Pi keeps its own "Sign in with ChatGPT" login in its auth.json under
+# "openai", from a different OAuth client than codex, so Codex's tokens are
+# never copied into it: each account keeps its own Pi login in
+# providers/codex/<name>/pi-auth.json. On a switch from A to B, Pi's current
+# entry is saved as A's (unless it is plainly another workspace's), then B's
+# saved one replaces it, every other key kept. Pi re-reads auth.json when
+# another process changes it, so sessions already running follow too. Any
+# failure here leaves Pi as it was and never fails the Codex switch.
+pi_dir() { echo "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; }
+pi_store_of() { echo "$(account_dir "$1")/pi-auth.json"; } # name
+
+# The ChatGPT workspace a Pi login is for: its accountId, or the
+# chatgpt_account_id claim of its access token. Nothing when neither says.
+pi_workspace() { # entry-json
+  local acct jwt
+  acct=$(jq -r '.accountId // empty | strings' <<<"$1" 2>/dev/null || true)
+  if [[ -z $acct ]]; then
+    jwt=$(jq -r '.access // empty | strings' <<<"$1" 2>/dev/null || true)
+    [[ $jwt == *.*.* ]] || return 0
+    acct=$(base64 -d <<<"$(_b64url "$(cut -d. -f2 <<<"$jwt")")" 2>/dev/null \
+      | jq -r '."https://api.openai.com/auth".chatgpt_account_id // empty | strings' 2>/dev/null || true)
+  fi
+  printf '%s' "$acct"
+}
+
+# Pi's own lock: proper-lockfile's "<auth.json>.lock" directory, which Pi
+# holds while it reads, merges and writes auth.json. Waits about 2 seconds,
+# and takes over a lock left more than 30 seconds old (Pi's stale limit).
+pi_lock() { # auth.json
+  local lock="$1.lock" i age
+  for ((i = 0; i < 20; i++)); do
+    mkdir "$lock" 2>/dev/null && return 0
+    age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || date +%s) ))
+    if (( age > 30 )); then rmdir "$lock" 2>/dev/null || true; continue; fi
+    sleep 0.1
+  done
+  return 1
+}
+
+pi_sync() { # from to
+  local from="$1" to="$2" auth
+  auth="$(pi_dir)/auth.json"
+  [[ -f $auth ]] || return 0
+  jq -e '.openai | objects' "$auth" >/dev/null 2>&1 || return 0
+  if ! pi_lock "$auth"; then
+    echo "Pi is updating its login right now, so it keeps its current one; switch again to move it."
+    return 0
+  fi
+  pi_sync_locked "$from" "$to" "$auth" || true
+  rmdir "$auth.lock" 2>/dev/null || true
+  return 0
+}
+
+pi_sync_locked() { # from to auth.json
+  local from="$1" to="$2" auth="$3" entry want saved tmp
+  entry=$(jq -c '.openai | objects' "$auth" 2>/dev/null) || return 0
+  [[ -n $entry ]] || return 0
+
+  if [[ -n $from && -f $(account_dir "$from")/codex.json && $from != "$to" ]]; then
+    want=$(codex_identity "$(store_of "$from")"); want=${want#*/}
+    saved=$(pi_workspace "$entry")
+    if [[ -z $want || -z $saved || $want == "$saved" ]]; then
+      tmp=$(mktemp "$(pi_store_of "$from").XXXXXX" 2>/dev/null) || return 0
+      # mktemp makes the file 600 before any token is written into it.
+      if ! { printf '%s\n' "$entry" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$(pi_store_of "$from")"; }; then
+        rm -f "$tmp"
+        return 0
+      fi
+    fi
+  fi
+  [[ $from != "$to" ]] || return 0
+
+  if [[ ! -f $(pi_store_of "$to") ]]; then
+    msg pi_login_hint "$to"; echo
+    return 0
+  fi
+  tmp=$(mktemp "$auth.XXXXXX" 2>/dev/null) || return 0
+  if jq --slurpfile e "$(pi_store_of "$to")" '.openai = $e[0]' "$auth" > "$tmp" 2>/dev/null \
+     && jq -e '.openai | objects' "$tmp" >/dev/null 2>&1 \
+     && chmod 600 "$tmp" && mv -f "$tmp" "$auth"; then
+    echo "Pi now uses $to's ChatGPT login, including Pi sessions already running."
+  else
+    rm -f "$tmp"
+  fi
+  return 0
 }
 
 # Codex 0.157 runs a shared background server (`codex app-server
